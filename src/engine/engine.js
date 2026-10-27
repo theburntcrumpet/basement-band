@@ -8,16 +8,29 @@ import { AmpSlot } from './amp.js';
 
 const Tone = window.Tone;
 const PPQ = 192;
+// The master limiter's lookahead (see master-worklet.js): everything you hear is this much later.
+const MASTER_DELAY = 0.001;
 export const ticks = beats => `${Math.round(beats * PPQ)}i`;
+
+// Tone's addAudioWorkletModule() keeps a single promise per context, so only the first module ever
+// loads. Load each of ours directly, once per context (live and every offline render).
+const WORKLETS = ['recorder', 'amp', 'master'];
+const loadedWorklets = new WeakMap();
+export async function loadWorklets(context = Tone.getContext()) {
+  const raw = context.rawContext;
+  if (!loadedWorklets.has(raw)) loadedWorklets.set(raw, Promise.all(WORKLETS.map(m => raw.audioWorklet.addModule(`engine/${m}-worklet.js`))));
+  return loadedWorklets.get(raw);
+}
 
 // Shared send effects + master bus, built in the current Tone context.
 function buildBuses(bpm) {
   const master = new Tone.Volume(0);
   const masterFx = new FxSlot();
-  const comp = new Tone.Compressor({ threshold: -16, ratio: 2.5, attack: 0.012, release: 0.2, knee: 8 });
-  const limiter = new Tone.Limiter(-0.8);
+  // Glue compressor + limiter in one low-latency worklet (needs engine/master-worklet.js loaded).
+  const limiter = Tone.getContext().createAudioWorkletNode('bb-master', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
   master.connect(masterFx.input);
-  masterFx.output.chain(comp, limiter, Tone.getDestination());
+  Tone.connect(masterFx.output, limiter);
+  Tone.connect(limiter, Tone.getDestination());
 
   const reverb = new Tone.Convolver(makeImpulse(2.6));
   const reverbIn = new Tone.Gain(1);
@@ -29,7 +42,7 @@ function buildBuses(bpm) {
   const delayTone = new Tone.Filter(3200, 'lowpass');
   delayIn.chain(delay, delayTone, master);
 
-  return { master, masterFx, comp, limiter, reverb, reverbIn, reverbEq, delay, delayIn, delayTone };
+  return { master, masterFx, limiter, reverb, reverbIn, reverbEq, delay, delayIn, delayTone };
 }
 
 // Smooth stereo room: exponentially decaying noise, darker as it fades.
@@ -153,10 +166,42 @@ export function expandRegion(region) {
   return out;
 }
 
-// Schedules a whole project onto a transport. Returns the players it created (for disposal).
-export function scheduleProject(transport, project, nodes, audioPool, { from = 0 } = {}) {
+// Where an audio region's content plays: one segment per loop pass. Each pass starts `phase` beats
+// into the content (non-zero after splitting a looped clip) and anything past the end of the
+// recording is silence, so clips can be stretched to fill whole bars.
+export function audioSegments(region) {
+  const loop = region.loopLength || region.length;
+  const phase = region.phase || 0;
+  const out = [];
+  for (let k = 0; ; k++) {
+    const segStart = k * loop - phase;
+    if (segStart >= region.length - 1e-6) break;
+    const from = Math.max(0, segStart);
+    const into = from - segStart;
+    out.push({ at: region.start + from, into, length: Math.min(loop - into, region.length - from) });
+  }
+  return out;
+}
+
+// Tone's transport can invoke an event twice when it lands exactly on a render-block boundary
+// (common in offline export, where whole seconds line up with 128-sample blocks), which doubled
+// notes and clips. Each callback runs once per moment; a later cycle repeat still fires.
+function once(fn) {
+  let last = -Infinity;
+  return t => {
+    if (Math.abs(t - last) < 1e-4) return;
+    last = t;
+    fn(t);
+  };
+}
+
+// Schedules a whole project onto a transport.
+//   from:      the beat playback starts at; audio already under way there starts partway through
+//   cycle:     the cycle range, if on; audio spanning its start restarts partway on each repeat
+//   isRepeat:  () => true once the transport has wrapped round the cycle at least once
+//   active:    a Set collecting live audio sources, so they can be stopped
+export function scheduleProject(transport, project, nodes, audioPool, { from = 0, cycle = null, isRepeat = () => false, active = null } = {}) {
   const spb = 60 / project.bpm;
-  const players = [];
   for (const track of project.tracks) {
     const node = nodes.get(track.id);
     if (!node) continue;
@@ -164,21 +209,37 @@ export function scheduleProject(transport, project, nodes, audioPool, { from = 0
       if (track.type === 'audio') {
         const buffer = audioPool.get(region.audioId);
         if (!buffer || regionEnd(region) <= from) continue;
-        const player = new Tone.Player(buffer).connect(node.input);
-        player.fadeIn = 0.003;
-        player.fadeOut = 0.01;
-        player.volume.value = region.gain ?? 0;
-        player.sync().start(ticks(region.start), region.offset || 0, region.length * spb);
-        players.push(player);
+        // One-shot sources at exact transport times (Tone's synced Player could start a clip twice).
+        const ctx = node.input.context;
+        for (const seg of audioSegments(region)) {
+          const offset = (region.offset || 0) + seg.into * spb;
+          const dur = Math.min(seg.length * spb, buffer.duration - offset);
+          if (dur <= 0.001) continue;
+          const play = (time, skip) => {
+            if (skip >= dur - 0.001) return;
+            const src = new Tone.ToneBufferSource({ context: ctx, url: buffer, fadeIn: skip > 0 ? 0.005 : 0.003, fadeOut: 0.01 }).connect(node.input);
+            src.startedAt = time;
+            src.start(time, offset + skip, dur - skip, Tone.dbToGain(region.gain ?? 0));
+            if (active) {
+              active.add(src);
+              src.onended = () => { active.delete(src); src.dispose(); };
+            }
+          };
+          const end = seg.at + seg.length;
+          if (seg.at >= from - 1e-9) transport.schedule(once(t => play(t, 0)), ticks(seg.at));
+          else if (end > from) transport.schedule(once(t => play(t, (from - seg.at) * spb)), ticks(from));
+          if (cycle && seg.at < cycle.start - 1e-9 && end > cycle.start) {
+            transport.schedule(once(t => { if (isRepeat()) play(t, (cycle.start - seg.at) * spb); }), ticks(cycle.start));
+          }
+        }
         continue;
       }
       for (const n of expandRegion(region)) {
         if (n.t < from - 1e-6) continue;
-        transport.schedule(time => node.instrument?.play(n.n, n.d * spb, time, n.v), ticks(n.t));
+        transport.schedule(once(time => node.instrument?.play(n.n, n.d * spb, time, n.v)), ticks(n.t));
       }
     }
   }
-  return players;
 }
 
 // ------------------------------------------------------------------ live engine
@@ -188,8 +249,9 @@ export class Engine extends EventTarget {
     super();
     this.nodes = new Map();
     this.audioPool = new Map();
-    this.players = [];
     this.pending = new Map();
+    this.audioSources = new Set();
+    this.loopCount = 0;
     this.project = null;
     this.recording = null;
     this.metronome = false;
@@ -199,12 +261,13 @@ export class Engine extends EventTarget {
     Tone.setContext(new Tone.Context({ latencyHint: 'interactive', lookAhead: 0.05 }));
     this.transport = Tone.getTransport();
     this.transport.PPQ = PPQ;
+    // When the cycle wraps, cut off audio from the previous pass (anything started before the wrap).
+    this.transport.on('loop', time => { this.loopCount++; this.stopAudio(time, time); });
+    await loadWorklets();
     this.buses = buildBuses(120);
     this.masterMeter = new Tone.Meter({ smoothing: 0.85, channelCount: 1 });
-    this.buses.limiter.connect(this.masterMeter);
+    Tone.connect(this.buses.limiter, this.masterMeter);
     this.click = new Tone.Synth({ oscillator: { type: 'triangle' }, envelope: { attack: 0.001, decay: 0.05, sustain: 0, release: 0.02 }, volume: -10 }).toDestination();
-    await Tone.getContext().addAudioWorkletModule('engine/recorder-worklet.js');
-    await Tone.getContext().addAudioWorkletModule('engine/amp-worklet.js');
   }
 
   async resume() {
@@ -286,10 +349,12 @@ export class Engine extends EventTarget {
     this.transport.ticks = Math.max(0, Math.round(beats * PPQ));
   }
 
-  reschedule() {
+  // Schedules everything from `from` (the playback start, or the current position for edits while playing).
+  reschedule(from = this.playing ? this.position() + 0.05 : 0) {
     this.transport.cancel(0);
-    this.players.forEach(p => p.dispose());
-    this.players = scheduleProject(this.transport, this.project, this.nodes, this.audioPool);
+    this.stopAudio(Tone.now());
+    const cycle = this.project.cycle?.on ? this.project.cycle : null;
+    scheduleProject(this.transport, this.project, this.nodes, this.audioPool, { from, cycle, isRepeat: () => this.loopCount > 0, active: this.audioSources });
     const m = meter(this.project.timeSig);
     this.transport.scheduleRepeat(time => {
       if (!this.metronome) return;
@@ -304,7 +369,8 @@ export class Engine extends EventTarget {
 
   async play(fromBeat, { countIn = false } = {}) {
     await this.resume();
-    this.reschedule();
+    this.loopCount = 0;
+    this.reschedule(fromBeat);
     const spb = 60 / this.project.bpm;
     let at = Tone.now() + 0.05;
     if (countIn) {
@@ -324,12 +390,19 @@ export class Engine extends EventTarget {
     for (const node of this.nodes.values()) node.fx.setRunning(on);
   }
 
+  stopAudio(time, before = Infinity) {
+    for (const src of this.audioSources) {
+      if (src.startedAt >= before) continue;
+      try { src.stop(time); } catch { /* already stopped */ }
+      this.audioSources.delete(src);
+    }
+  }
+
   stop() {
     this.setFxRunning(false);
     this.transport.stop();
     this.transport.cancel(0);
-    this.players.forEach(p => p.dispose());
-    this.players = [];
+    this.stopAudio(Tone.now());
     for (const node of this.nodes.values()) node.instrument?.stopAll(Tone.now());
   }
 
@@ -425,7 +498,7 @@ export class Engine extends EventTarget {
       channels: settings.channelCount || 2,
       label: this.inputStream?.getAudioTracks()[0]?.label || '',
       // What you hear when monitoring: input + processing + output buffering.
-      monitorLatencyMs: Math.round((inLatency + (raw.baseLatency || 0) + (this.outputLatency || 0)) * 1000),
+      monitorLatencyMs: Math.round((inLatency + (raw.baseLatency || 0) + (this.outputLatency || 0) + MASTER_DELAY) * 1000),
       inputLatency: inLatency,
     };
   }
@@ -510,7 +583,7 @@ export class Engine extends EventTarget {
     const rate = Tone.getContext().sampleRate;
     const raw = Tone.getContext().rawContext;
     // You hear the beat outputLatency late and your playing reaches us inputLatency later still.
-    const latency = (this.outputLatency || 0) + (raw.baseLatency || 0) + (inputLatency || 0) + latencyMs / 1000;
+    const latency = (this.outputLatency || 0) + (raw.baseLatency || 0) + (inputLatency || 0) + MASTER_DELAY + latencyMs / 1000;
     const startTime = chunks[0].frame / rate;
     const total = chunks.reduce((n, c) => n + c.data[0].length, 0);
     const channels = Math.max(...chunks.map(c => c.data.length));
@@ -541,8 +614,8 @@ export async function renderProject(project, audioPool, { start = 0, end, tail =
   await Promise.all(project.tracks.filter(t => t.type !== 'audio').map(async t => loaded.set(t.id, await resolveInstrument(t.instrument))));
 
   const rendered = await Tone.Offline(async ({ transport }) => {
-    // The amp's noise gate is an AudioWorklet; the offline context needs its own copy.
-    await Tone.getContext().addAudioWorkletModule('engine/amp-worklet.js');
+    // The master dynamics and the amp's noise gate are AudioWorklets; the offline context needs its own copies.
+    await loadWorklets();
     transport.PPQ = PPQ;
     transport.bpm.value = project.bpm;
     const buses = buildBuses(project.bpm);

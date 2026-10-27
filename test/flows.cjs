@@ -408,8 +408,13 @@ module.exports = async function flows(win, app) {
     const gated = await render({ ...defaultAmp('lead'), gain: 0.8, gate: 0.75 });
     // The gate must exist inside export renders too (its worklet is loaded per context).
     const { AmpSlot } = await import('./engine/amp.js');
-    const probe = await Tone.Offline(async () => { await Tone.getContext().addAudioWorkletModule('engine/amp-worklet.js'); const a = new AmpSlot(); a.setConfig(defaultAmp('lead')); window.__gateBuilt = !!a.nodes.gate; }, 0.1);
+    const { loadWorklets } = await import('./engine/engine.js');
+    const probe = await Tone.Offline(async () => { await loadWorklets(); const a = new AmpSlot(); a.setConfig(defaultAmp('lead')); window.__gateBuilt = !!a.nodes.gate; }, 0.1);
     if (!window.__gateBuilt) return 'gate missing in offline render';
+    // ...and live, on the guitar track's amp.
+    app.quickStart('guitar');
+    const liveAmp = app.engine.nodes.get(store.selectedTrack.id).amp;
+    if (!liveAmp.nodes.gate) return 'gate missing live';
     const humOpen = rms(ungated, 0.2, 0.8), humGated = rms(gated, 0.2, 0.8), noteGated = rms(gated, 1.1, 1.8);
     const gateOk = humGated < humOpen * 0.05 && noteGated > 0.02;
     const desc = Object.entries(bright).map(([k, v]) => k + ' ' + v.toFixed(3)).join(', ') + '; hum ' + humOpen.toFixed(4) + ' -> ' + humGated.toExponential(1);
@@ -447,6 +452,79 @@ module.exports = async function flows(win, app) {
   await check('stop monitoring releases the input', `
     app.stopMonitoring();
     return app.engine.inputStream === null && !app.engine.monitor ? 'ok' : 'input still open';`);
+
+  await check('audio clips: extend with silence, loop, snap to bars, split', `
+    store.dirty = false;
+    await app.newSong();
+    store.update(p => { p.bpm = 120; });
+    // A 7.6-beat clip (a little short of 2 bars): a click at the start of each beat.
+    const rate = 44100, spb = 0.5;
+    const clip = new AudioBuffer({ length: Math.round(7.6 * spb * rate), sampleRate: rate, numberOfChannels: 1 });
+    for (let b = 0; b < 8; b++) { const i = Math.round(b * spb * rate); for (let k = 0; k < 200 && i + k < clip.length; k++) clip.getChannelData(0)[i + k] = Math.sin(k * 0.3) * 0.8; }
+    app.addAudioBuffer(clip, 'Clip', null, 0);
+    const t = store.project.tracks.find(t => t.type === 'audio');
+    const r = t.regions[0];
+    app.refresh();
+    const drag = (handle, dxBeats) => {
+      const el = document.querySelector('.region[data-id="' + r.id + '"] ' + handle);
+      const box = el.getBoundingClientRect();
+      const x = handle === '' ? box.left + 5 : box.right - 2, y = handle === '.handle-loop' ? box.top + 3 : box.bottom - 3;
+      const target = handle === '' ? document.querySelector('.region[data-id="' + r.id + '"] .label') : el;
+      target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: y, button: 0 }));
+      for (let i = 1; i <= 6; i++) window.dispatchEvent(new MouseEvent('mousemove', { clientX: x + (dxBeats * store.ui.zoom * i) / 6, clientY: y }));
+      window.dispatchEvent(new MouseEvent('mouseup', { clientX: x + dxBeats * store.ui.zoom, clientY: y }));
+      app.refresh();
+    };
+    drag('.handle-resize', 0.6);   // 7.6 -> 8 beats: pads with silence
+    const reg = () => store.findRegion(r.id).region;
+    if (Math.abs(reg().length - 8) > 1e-6 || Math.abs(reg().loopLength - 8) > 1e-6) return 'extend ' + reg().length + '/' + reg().loopLength;
+    drag('.handle-loop', 24);      // repeat to 32 beats (4 passes)
+    if (Math.abs(reg().length - 32) > 1e-6 || reg().loopLength !== 8) return 'loop ' + reg().length + '/' + reg().loopLength;
+    // Render and check a click starts every pass exactly on the bar.
+    const { renderProject, audioSegments } = await import('./engine/engine.js');
+    const buf = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 32, tail: 0.1 });
+    const d = buf.getChannelData(0), sr = buf.sampleRate;
+    const at = beat => { let m = 0; const i = Math.round(beat * spb * sr); for (let k = 0; k < 400; k++) m = Math.max(m, Math.abs(d[i + k] || 0)); return m; };
+    const gap = beat => { let m = 0; const i = Math.round(beat * spb * sr); for (let k = 0; k < 0.15 * sr; k++) m = Math.max(m, Math.abs(d[i + k] || 0)); return m; };
+    // Each repeat starts with its click right on the bar (the render's very first click sits under the clip fade-in).
+    if (!([8, 16, 24].every(b => at(b) > 0.1) && at(0) > 0.02)) return 'pass starts ' + [0, 8, 16, 24].map(at);
+    if (!(gap(7.65) < 0.02)) return 'padding not silent ' + gap(7.65);
+    // Move an off-grid copy onto a bar line.
+    store.update(() => { t.regions.push({ ...JSON.parse(JSON.stringify(reg())), id: 'copy', start: 33.4, length: 8, loopLength: 8 }); });
+    store.ui.selectedRegions = new Set(['copy']); app.refresh();
+    const c = document.querySelector('.region[data-id="copy"] .label'), cb = c.getBoundingClientRect();
+    c.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: cb.left + 5, clientY: cb.top + 5, button: 0 }));
+    for (let i = 1; i <= 4; i++) window.dispatchEvent(new MouseEvent('mousemove', { clientX: cb.left + 5 + store.ui.zoom * 2.3 * i / 4, clientY: cb.top + 5 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: cb.left + 5 + store.ui.zoom * 2.3, clientY: cb.top + 5 }));
+    const moved = store.findRegion('copy').region.start;
+    if (Math.abs(moved - Math.round(moved)) > 1e-6) return 'move did not snap: ' + moved;
+    // Duplicating the short clip lands the copy on the next bar.
+    store.update(() => { t.regions = t.regions.filter(x => x.id === r.id); });
+    store.update(() => { reg().length = 7.6; reg().loopLength = 7.6; });
+    store.ui.selectedRegions = new Set([r.id]);
+    app.duplicateRegions();
+    const dup = t.regions.find(x => x.id !== r.id);
+    if (dup.start !== 8) return 'duplicate landed at ' + dup.start;
+    // Splitting a looped clip plays exactly the same.
+    store.update(() => { t.regions = [reg()]; reg().length = 32; reg().loopLength = 8; });
+    const before = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 32, tail: 0 });
+    store.ui.selectedRegions = new Set([r.id]);
+    app.seek(13.25); // between clicks: the new half's 3 ms anti-click fade-in shouldn't land on one
+    app.splitAtPlayhead();
+    const after = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 32, tail: 0 });
+    const a = before.getChannelData(0), b2 = after.getChannelData(0);
+    // Compare loudness in 10 ms windows: resampling a 44.1 kHz clip in a 48 kHz context can shift a
+    // mid-clip start by a fraction of a sample, which is inaudible but not sample-identical.
+    const win = Math.round(before.sampleRate * 0.01);
+    let diff = 0, where = 0;
+    for (let i = 0; i + win < a.length; i += win) {
+      let ea = 0, eb = 0; for (let k = i; k < i + win; k++) { ea += a[k] * a[k]; eb += b2[k] * b2[k]; }
+      const x = Math.abs(Math.sqrt(ea / win) - Math.sqrt(eb / win));
+      if (x > diff) { diff = x; where = i; }
+    }
+    const beatsAt = where / before.sampleRate / spb;
+    const regs = JSON.stringify(t.regions.map(x => ({ s: x.start, l: x.length, ll: x.loopLength, ph: x.phase, o: x.offset })));
+    return diff < 0.02 ? 'ok extend, loop x4 on the bar, snap-to-bar move to ' + moved + ', duplicate at bar 3, split identical (max diff ' + diff.toFixed(4) + ')' : 'split changed audio by ' + diff.toFixed(3) + ' at beat ' + beatsAt.toFixed(3) + ' ' + regs;`);
 
   await check('piano roll follows the selected track and region', `
     store.dirty = false;

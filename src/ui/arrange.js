@@ -7,6 +7,13 @@ import { getInstrument } from '../engine/instruments.js';
 import { peaks } from '../engine/wav.js';
 
 const HEADER_W = 230;
+const PEAKS_PER_SEC = 200;
+const peakMaps = new WeakMap();
+// Waveform peaks at a fixed resolution, computed once per recording.
+function peakMap(buf) {
+  if (!peakMaps.has(buf)) peakMaps.set(buf, peaks(buf, Math.max(1, Math.ceil(buf.duration * PEAKS_PER_SEC))));
+  return peakMaps.get(buf);
+}
 const CYCLE_STRIP_H = 15;
 const CAT_ICONS = { 'My Instruments': '🎼', Keyboards: '🎹', Bass: '🎸', Guitar: '🎸', Strings: '🎻', Brass: '🎺', Woodwinds: '🎷', Mallets: '🔔', Synth: '🎛️', 'Drum Kits': '🥁' };
 
@@ -191,7 +198,8 @@ export class Arrange {
     const cv = h('canvas');
     el.append(cv);
     const loopLen = region.loopLength || region.length;
-    if (track.type !== 'audio') for (let b = loopLen; b < region.length - 1e-6; b += loopLen) el.append(h('div', { class: 'loop-mark', style: { left: b * z + 'px' } }));
+    const phase = track.type === 'audio' ? region.phase || 0 : 0;
+    for (let b = loopLen - phase; b < region.length - 1e-6; b += loopLen) if (b > 1e-6) el.append(h('div', { class: 'loop-mark', style: { left: b * z + 'px' } }));
     el.append(h('div', { class: 'handle-loop' }), h('div', { class: 'handle-resize' }));
     requestAnimationFrame(() => this.drawRegion(cv, track, region, w));
 
@@ -217,16 +225,17 @@ export class Arrange {
     if (track.type === 'audio') {
       const buf = this.app.engine.audioPool.get(region.audioId);
       if (!buf) return;
-      const total = buf.duration;
       const spb = 60 / store.project.bpm;
-      const start = (region.offset || 0) / total;
-      const span = (region.length * spb) / total;
-      const all = peaks(buf, Math.max(1, Math.round(w / Math.max(span, 1e-6))));
+      const loop = region.loopLength || region.length;
+      const phase = region.phase || 0;
+      const map = peakMap(buf);
       ctx.fillStyle = '#0d2238aa';
       const mid = height / 2;
       for (let x = 0; x < w; x++) {
-        const idx = Math.floor((start + (x / w) * span) * all.length);
-        const v = all[idx] || 0;
+        // Position within the current loop pass; past the end of the recording it's silence.
+        const into = (x / z + phase) % loop;
+        const t = (region.offset || 0) + into * spb;
+        const v = t < buf.duration ? map[Math.floor(t * PEAKS_PER_SEC)] || 0 : 0;
         ctx.fillRect(x, mid - v * mid, 1, Math.max(1, v * height));
       }
       return;
@@ -435,9 +444,11 @@ export class Arrange {
     const orig = picked.map(({ track: t, region: r }) => ({ r, t, start: r.start, length: r.length, loopLength: r.loopLength, notes: r.notes, offset: r.offset, ti: tracks.indexOf(t) }));
     let copied = false;
 
+    const anchor = orig.find(o => o.r === region) || orig[0];
     drag(e, (dx, dy, ev) => {
       store.beginGesture();
-      const d = this.snap(dx / this.zoom, ev.shiftKey);
+      // Snap where the clicked region lands (not how far it moved), so off-grid clips can reach the grid.
+      const d = this.snap(anchor.start + dx / this.zoom, ev.shiftKey) - anchor.start;
       if (mode === 'move') {
         if (ev.altKey && !copied) {
           // Option-drag copies: leave clones at the original spot.
@@ -457,11 +468,14 @@ export class Arrange {
       } else {
         for (const o of orig) {
           const minLen = this.snapUnit() >= this.meter.barBeats ? this.meter.pulse : 0.25;
-          const len = Math.max(minLen, this.snap(o.length + dx / this.zoom, ev.shiftKey));
+          // Snap the region's end to the grid; audio past the end of the recording is silence.
+          const len = Math.max(minLen, this.snap(o.start + o.length + dx / this.zoom, ev.shiftKey) - o.start);
           if (o.t.type === 'audio') {
-            const buf = this.app.engine.audioPool.get(o.r.audioId);
-            const maxLen = buf ? (buf.duration - (o.r.offset || 0)) / (60 / store.project.bpm) : len;
-            o.r.length = Math.min(len, maxLen);
+            const looped = (o.loopLength || o.length) < o.length - 1e-6;
+            o.r.length = len;
+            // Resizing an unlooped clip changes what one pass holds; looping repeats it.
+            if (mode === 'resize' && !looped) o.r.loopLength = len;
+            else o.r.loopLength = o.loopLength || o.length;
           } else if (mode === 'resize') {
             resizeRegion(o.r, len, store.project, { notes: o.notes, length: o.length, loopLength: o.loopLength });
           } else {

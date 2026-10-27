@@ -469,7 +469,10 @@ class App {
   duplicateRegions() {
     const list = this.selectedRegions();
     if (!list.length) return;
-    const span = Math.max(...list.map(x => x.region.start + x.region.length)) - Math.min(...list.map(x => x.region.start));
+    // Copies land on the next bar line after the selection, even if the clip isn't a whole number of bars.
+    const bar = barBeats(store.project);
+    const raw = Math.max(...list.map(x => x.region.start + x.region.length)) - Math.min(...list.map(x => x.region.start));
+    const span = Math.ceil(raw / bar - 1e-6) * bar;
     const fresh = new Set();
     store.update(() => {
       for (const { track, region } of list) {
@@ -495,7 +498,16 @@ class App {
         right.start = at;
         right.length = region.length - cut;
         if (track.type === 'audio') {
-          right.offset = (region.offset || 0) + cut * spb;
+          const loop = region.loopLength || region.length;
+          if (loop < region.length - 1e-6) {
+            // Looped clip: the right half keeps looping, starting partway into a pass.
+            right.phase = ((region.phase || 0) + cut) % loop;
+          } else {
+            right.offset = (region.offset || 0) + ((region.phase || 0) + cut) * spb;
+            right.phase = 0;
+            right.loopLength = right.length;
+            region.loopLength = cut;
+          }
         } else {
           // Bake loop repeats so both halves keep exactly what played before.
           const loopLen = region.loopLength || region.length;

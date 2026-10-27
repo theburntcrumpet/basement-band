@@ -27,6 +27,8 @@ open it and start making music.
   crackle, city ambience, whooshes, booms, drones), drum one-shots, plus any folders of
   WAV/MP3/FLAC/OGG files you add. Drag
   them onto the timeline, or drop audio files in from your file manager.
+- **Arranging audio**: drag an audio clip's bottom-right corner to extend it with silence (e.g. to
+  fill whole bars) and its top-right corner to repeat it; clips snap to the grid when moved.
 - **Recording**: record your mic or audio interface onto audio tracks (pick the device and input
   1, 2 or both; latency compensation; count-in), or record MIDI keyboards and Musical Typing onto
   instrument tracks.
