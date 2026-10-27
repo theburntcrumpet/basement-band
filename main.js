@@ -16,7 +16,43 @@ const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 const INSTRUMENT_EXT = new Set(['.sf2', '.sfz']);
 
 // Test runs get their own settings so they never touch the user's library.
-if (process.env.BB_SMOKE) app.setPath('userData', path.join(require('node:os').tmpdir(), `basement-band-test-${process.pid}`));
+if (process.env.BB_SMOKE) {
+  app.setPath('userData', path.join(require('node:os').tmpdir(), `basement-band-test-${process.pid}`));
+  if (process.env.BB_TEST_SETTINGS) {
+    require('node:fs').mkdirSync(app.getPath('userData'), { recursive: true });
+    require('node:fs').writeFileSync(path.join(app.getPath('userData'), 'settings.json'), process.env.BB_TEST_SETTINGS);
+  }
+}
+
+// Low-latency mode: Chromium's smallest audio buffer (128 frames). Must be set before the app starts,
+// so it reads the saved setting synchronously; changing it takes effect after a restart.
+const bootSettings = (() => {
+  try { return JSON.parse(require('node:fs').readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); } catch { return {}; }
+})();
+if (bootSettings.lowLatency) app.commandLine.appendSwitch('audio-buffer-size', '128');
+
+// On Linux/PipeWire the graph's block size ("quantum", often 1024 frames = 21 ms) sits under every app.
+// While monitoring in low-latency mode we ask for 128 frames, and restore the previous value afterwards.
+const { execFile } = require('node:child_process');
+let savedQuantum = null;
+function pwMetadata(args) {
+  return new Promise(resolve => execFile('pw-metadata', ['-n', 'settings', ...args], { timeout: 3000 }, (err, out) => resolve(err ? null : String(out))));
+}
+async function setLowLatencyQuantum(on) {
+  if (process.platform !== 'linux') return false;
+  if (on) {
+    if (savedQuantum !== null) return true;
+    const current = await pwMetadata([]);
+    if (current === null) return false; // not PipeWire
+    const m = /clock\.force-quantum' value:'(\d+)'/.exec(current);
+    savedQuantum = m ? m[1] : '0';
+    return (await pwMetadata(['0', 'clock.force-quantum', '128'])) !== null;
+  }
+  if (savedQuantum === null) return false;
+  const restore = savedQuantum;
+  savedQuantum = null;
+  return (await pwMetadata(['0', 'clock.force-quantum', restore])) !== null;
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
@@ -182,6 +218,8 @@ function registerIpc(win) {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   });
 
+  ipcMain.handle('audio:low-latency', (_e, on) => setLowLatencyQuantum(!!on));
+  ipcMain.handle('audio:boot-low-latency', () => !!bootSettings.lowLatency);
   ipcMain.handle('shell:credits', () => shell.openPath(path.join(ASSETS, 'samples', 'CREDITS.md')));
 }
 
@@ -231,3 +269,10 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
+
+// Never leave the system's audio quantum changed after we exit.
+app.on('will-quit', e => {
+  if (savedQuantum === null) return;
+  e.preventDefault();
+  setLowLatencyQuantum(false).finally(() => app.exit(0));
+});

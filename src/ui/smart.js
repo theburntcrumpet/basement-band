@@ -102,6 +102,8 @@ export class SmartControls {
       h('div', { class: 'monitor-row' },
         h('button', { class: 'text' + (monitoring ? ' accent' : ''), onclick: () => app.toggleMonitor(track) }, monitoring ? '🎧 Monitoring' : '🎧 Monitor'),
         h('canvas', { id: 'input-meter', width: 120, height: 10, title: 'Input level — keep the peaks out of the red' })),
+      h('label', { class: 'check', style: { marginTop: '8px' }, title: 'Uses the smallest audio buffers (takes effect after a restart) and, on Linux with PipeWire, asks for 128-frame blocks while monitoring. Can crackle on slower computers.' },
+        h('input', { type: 'checkbox', checked: !!app.settings.lowLatency, onchange: e => app.setLowLatency(e.target.checked) }), 'Low-latency mode'),
       h('div', { class: 'lib-note', style: { padding: '6px 0 0' } },
         monitoring && info.open ? `${info.label || 'Input'} · about ${info.monitorLatencyMs} ms monitoring latency` : 'Use headphones while monitoring. Recordings are kept clean, so you can change the amp later.'));
   }

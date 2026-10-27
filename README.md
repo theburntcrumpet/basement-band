@@ -33,7 +33,7 @@ open it and start making music.
 - **Guitar & bass**: a "Guitar / Bass" track with an amp sim (Clean, Crunch, Lead, Bass: gain,
   tone stack, presence, noise gate, speaker cabinet). Monitor through it while you play; recordings
   stay clean (DI), so you can change the amp afterwards. Monitoring latency depends on your OS audio
-  (shown in the app; typically ~10–25 ms on Linux/PipeWire, often more on Windows).
+  (shown in the app; ~24 ms on Linux/PipeWire with Low-latency mode).
 - **Editing**: piano roll, drum grid, region loop/resize/split/duplicate, undo/redo.
 - **Mixing**: per-track volume, pan, tone, drive, reverb, echo and a Bass/Mid/Treble EQ; master
   bus compressor/limiter.
@@ -94,7 +94,10 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
 ## Current limitations
 
 - **Latency:** audio runs through Chromium's Web Audio, so there's no ASIO/JACK-level low latency.
-  Guitar monitoring is typically ~10–25 ms on Linux (PipeWire) and often more on Windows.
+  Measured guitar monitoring on Linux/PipeWire: ~60 ms by default, ~24 ms with **Low-latency mode**
+  (Input section; smallest Chromium buffers, and PipeWire's quantum lowered to 128 frames while
+  monitoring). Getting below ~10 ms needs a native audio path (see the roadmap). Until then, your
+  interface's hardware direct monitoring gives zero-latency (dry) monitoring while recording.
 - **One time signature and tempo per song:** no tempo or meter changes partway through.
 - **Audio doesn't follow tempo changes:** recordings and samples keep their speed and length.
 - **No automation:** volume, pan and effect settings are fixed for the whole song.
@@ -118,7 +121,9 @@ Roughly in priority order:
 4. **Tempo-following audio** (time-stretching loops and recordings).
 5. **Tempo and time-signature changes** within a song.
 6. **Song files with audio stored alongside** (or compressed) instead of embedded WAV.
-7. **Plugin hosting (VST3/CLAP)** through a native helper process, as a new instrument source.
+7. **Native low-latency audio helper** (JACK/PipeWire on Linux, ASIO/WASAPI exclusive on Windows)
+   running the amp sim for sub-10 ms guitar monitoring; the same helper would host
+   **VST3/CLAP plugins** as a new instrument source.
 8. **More amp and cabinet models**, plus impulse-response loading for cabinets.
 9. **macOS builds** and code signing on all platforms.
 10. **Arrangement markers** (verse/chorus) and a song-structure view for the Session Band.

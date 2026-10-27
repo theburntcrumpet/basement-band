@@ -399,6 +399,23 @@ export class Engine extends EventTarget {
     this.inputTaps = {};
   }
 
+  // Tone's context wrapper doesn't expose outputLatency, so measure it with a brief, silent native
+  // context configured the same way (same device, same buffer settings).
+  async measureOutputLatency() {
+    try {
+      const probe = new AudioContext({ latencyHint: 'interactive' });
+      const osc = probe.createOscillator(), mute = probe.createGain();
+      mute.gain.value = 0;
+      osc.connect(mute).connect(probe.destination);
+      osc.start();
+      let value = 0;
+      for (let i = 0; i < 10 && !value; i++) { await new Promise(r => setTimeout(r, 60)); value = probe.outputLatency || 0; }
+      await probe.close();
+      if (value) this.outputLatency = value;
+    } catch { /* keep the last measurement */ }
+    return this.outputLatency || 0;
+  }
+
   inputInfo() {
     const settings = this.inputStream?.getAudioTracks()[0]?.getSettings() || {};
     const raw = Tone.getContext().rawContext;
@@ -408,7 +425,7 @@ export class Engine extends EventTarget {
       channels: settings.channelCount || 2,
       label: this.inputStream?.getAudioTracks()[0]?.label || '',
       // What you hear when monitoring: input + processing + output buffering.
-      monitorLatencyMs: Math.round((inLatency + (raw.baseLatency || 0) + (raw.outputLatency || 0)) * 1000),
+      monitorLatencyMs: Math.round((inLatency + (raw.baseLatency || 0) + (this.outputLatency || 0)) * 1000),
       inputLatency: inLatency,
     };
   }
@@ -493,7 +510,7 @@ export class Engine extends EventTarget {
     const rate = Tone.getContext().sampleRate;
     const raw = Tone.getContext().rawContext;
     // You hear the beat outputLatency late and your playing reaches us inputLatency later still.
-    const latency = (raw.outputLatency || 0) + (raw.baseLatency || 0) + (inputLatency || 0) + latencyMs / 1000;
+    const latency = (this.outputLatency || 0) + (raw.baseLatency || 0) + (inputLatency || 0) + latencyMs / 1000;
     const startTime = chunks[0].frame / rate;
     const total = chunks.reduce((n, c) => n + c.data[0].length, 0);
     const channels = Math.max(...chunks.map(c => c.data.length));

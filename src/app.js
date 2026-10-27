@@ -48,6 +48,8 @@ class App {
     this.countIn = this.settings.countIn ?? true;
     this.wireToolbar();
     this.wireWindowDrop();
+    // Needed to line recordings up correctly; measured off the main path so startup isn't delayed.
+    this.engine.measureOutputLatency();
     this.wireKeyboard();
     this.wireMidi();
     this.library.render();
@@ -291,8 +293,12 @@ class App {
     try {
       await this.engine.resume();
       await this.engine.openInput(this.settings.inputDevice);
+      if (this.settings.lowLatency) await window.host?.setLowLatency(true);
       this.engine.setMonitor(track.id, track.input?.channel || 'left');
       this.monitorTrack = track.id;
+      // Re-measure once the audio system has settled on its (possibly smaller) buffers.
+      await new Promise(r => setTimeout(r, 300));
+      await this.engine.measureOutputLatency();
       const { monitorLatencyMs } = this.engine.inputInfo();
       toast(`Monitoring through "${track.name}" — about ${monitorLatencyMs} ms latency. Use headphones to avoid feedback.`, 5000);
     } catch (err) {
@@ -314,7 +320,19 @@ class App {
     ctx.fillRect(0, 0, 120 * lvl, 10);
   }
 
+  async setLowLatency(on) {
+    this.settings.lowLatency = on;
+    await window.host?.setSettings(this.settings);
+    const active = await window.host?.bootLowLatency();
+    if (!on && this.monitorTrack) await window.host?.setLowLatency(false);
+    if (on && this.monitorTrack) await window.host?.setLowLatency(true);
+    toast(on === active ? 'Low-latency mode ' + (on ? 'on' : 'off')
+      : 'Restart Basement Band to finish switching low-latency mode ' + (on ? 'on' : 'off'), 5000);
+    this.refresh();
+  }
+
   stopMonitoring() {
+    if (this.settings.lowLatency) window.host?.setLowLatency(false);
     this.monitorTrack = null;
     this.engine.setMonitor(null);
     this.engine.closeInput();

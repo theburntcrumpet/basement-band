@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('host', {
   scanFolder: dir => ipcRenderer.invoke('folder:scan', dir),
   readFile: p => ipcRenderer.invoke('file:read', p),
   openCredits: () => ipcRenderer.invoke('shell:credits'),
+  setLowLatency: on => ipcRenderer.invoke('audio:low-latency', on),
+  bootLowLatency: () => ipcRenderer.invoke('audio:boot-low-latency'),
 });
