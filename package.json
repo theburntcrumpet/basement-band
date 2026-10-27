@@ -1,0 +1,83 @@
+{
+  "name": "basement-band",
+  "productName": "Basement Band",
+  "version": "0.1.0",
+  "description": "A simple band-in-a-box music studio with built-in instruments, drummer and sample library.",
+  "main": "main.js",
+  "license": "MIT",
+  "author": "Basement Band contributors",
+  "scripts": {
+    "start": "electron .",
+    "fetch-samples": "node scripts/fetch-samples.mjs",
+    "postinstall": "node scripts/fetch-samples.mjs --if-missing",
+    "test": "node --test test/*.test.mjs",
+    "dist:linux": "electron-builder --linux AppImage deb",
+    "dist:win": "electron-builder --win nsis portable",
+    "smoke": "env -u WAYLAND_DISPLAY BB_SMOKE=test/flows.cjs xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox --use-fake-device-for-media-stream --use-fake-ui-for-media-stream",
+    "levels": "env -u WAYLAND_DISPLAY BB_SMOKE=test/levels.cjs xvfb-run -a electron . --ozone-platform=x11 --no-sandbox",
+    "test:instruments": "env -u WAYLAND_DISPLAY BB_SMOKE=test/instruments.cjs BB_TEST_ROOTS=assets/samples xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox"
+  },
+  "build": {
+    "appId": "io.github.basementband",
+    "productName": "Basement Band",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "node_modules/tone/build/Tone.js",
+      "build/icon.png",
+      "node_modules/@breezystack/lamejs/dist/lamejs.js"
+    ],
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "assets"
+      }
+    ],
+    "linux": {
+      "category": "AudioVideo",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "build/icon.png",
+      "maintainer": "theburntcrumpet <noreply@github.com>"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
+    }
+  },
+  "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
+    "tone": "^15.1.22"
+  },
+  "devDependencies": {
+    "electron": "^38.8.6",
+    "electron-builder": "^26.18.0"
+  },
+  "homepage": "https://github.com/theburntcrumpet/basement-band",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theburntcrumpet/basement-band.git"
+  },
+  "bugs": {
+    "url": "https://github.com/theburntcrumpet/basement-band/issues"
+  }
+}

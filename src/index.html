@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' app:; script-src 'self' app: blob:; worker-src 'self' app: blob:; style-src 'self' 'unsafe-inline' app:; img-src 'self' app: data: blob:; media-src 'self' app: blob: data:; connect-src 'self' app: blob: data:">
+  <title>Basement Band</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="vendor/Tone.js"></script>
+</head>
+<body>
+  <header id="toolbar">
+    <div class="group">
+      <button id="btn-library" class="tool on" title="Library (Y)">▤</button>
+      <button id="btn-smart" class="tool" title="Smart Controls (B)">◎</button>
+      <button id="btn-editor" class="tool" title="Editor (E)">✎</button>
+    </div>
+    <div class="group transport">
+      <button id="btn-rewind" class="tool" title="Go to beginning (Enter)">⏮</button>
+      <button id="btn-play" class="tool play" title="Play / Stop (Space)">▶</button>
+      <button id="btn-record" class="tool record" title="Record (R)">●</button>
+      <button id="btn-cycle" class="tool" title="Cycle (C)">⟲</button>
+    </div>
+    <div id="lcd">
+      <div class="lcd-cell"><span id="lcd-pos" class="big">1.1</span><label>bar.beat</label></div>
+      <div class="lcd-cell"><input id="lcd-bpm" class="big" type="number" min="40" max="240" value="110"><label>tempo</label></div>
+      <div class="lcd-cell">
+        <span class="key-select"><select id="lcd-key"></select><select id="lcd-scale"><option value="major">maj</option><option value="minor">min</option></select></span>
+        <label>key</label>
+      </div>
+      <div class="lcd-cell"><span class="key-select"><select id="lcd-time" title="Time signature"></select></span><label>time</label></div>
+    </div>
+    <div class="group">
+      <button id="btn-countin" class="tool" title="Count-in before recording">1234</button>
+      <button id="btn-metronome" class="tool" title="Metronome (K)">♩</button>
+      <button id="btn-typing" class="tool" title="Musical Typing (Ctrl+K)">⌨</button>
+    </div>
+    <div class="group master">
+      <input id="master-vol" type="range" min="-30" max="6" step="0.5" value="0" title="Master volume">
+      <canvas id="master-meter" width="80" height="8"></canvas>
+      <button id="btn-master" class="text" title="Effects on the whole mix (vinyl, tape, radio, lo-fi)">Master FX</button>
+    </div>
+    <div class="group files">
+      <button id="btn-new" class="text" title="New song (Ctrl+N)">New</button>
+      <button id="btn-open" class="text" title="Open (Ctrl+O)">Open</button>
+      <button id="btn-save" class="text" title="Save (Ctrl+S)">Save</button>
+      <button id="btn-export" class="text accent" title="Export to WAV">Export</button>
+    </div>
+  </header>
+
+  <main id="workspace">
+    <aside id="library">
+      <nav class="tabs">
+        <button data-tab="sounds" class="on">Sounds</button>
+        <button data-tab="loops">Loops</button>
+        <button data-tab="samples">Samples</button>
+        <button data-tab="band">Band</button>
+      </nav>
+      <div id="library-body"></div>
+    </aside>
+
+    <section id="center">
+      <div id="arrange">
+        <div id="arrange-scroll">
+          <div id="arrange-inner">
+            <div id="ruler-row">
+              <div id="ruler-corner"><button id="btn-add-track" title="New track (Ctrl+Alt+N)">＋</button></div>
+              <div id="ruler"></div>
+            </div>
+            <div id="tracks"></div>
+            <div id="playhead"></div>
+          </div>
+        </div>
+        <div id="arrange-empty" class="empty-state hidden">
+          <h2>Let's make some music</h2>
+          <p>Start with a full band, or add a single instrument.</p>
+          <div class="row">
+            <button class="big-choice" data-action="band"><span>🥁🎸🎹</span>Session Band</button>
+            <button class="big-choice" data-action="instrument"><span>🎹</span>Software Instrument</button>
+            <button class="big-choice" data-action="drums"><span>🥁</span>Drummer</button>
+            <button class="big-choice" data-action="audio"><span>🎤</span>Audio / Mic</button>
+            <button class="big-choice" data-action="guitar"><span>🎸</span>Guitar / Bass</button>
+          </div>
+        </div>
+      </div>
+      <div id="bottom" class="hidden">
+        <div id="bottom-bar">
+          <div id="bottom-title"></div>
+          <div id="bottom-tools"></div>
+          <button id="bottom-close" class="tool small" title="Close">✕</button>
+        </div>
+        <div id="bottom-body"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="typing" class="hidden"></div>
+  <div id="toast"></div>
+  <div id="modal" class="hidden"></div>
+  <div id="menu" class="hidden"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+# Builds the app when a GitHub release is published and attaches the installers to it.
+# The app version is taken from the release tag (v1.2.3 -> 1.2.3).
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach artifacts to (e.g. v0.2.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            targets: --linux AppImage deb
+            files: dist/*.AppImage dist/*.deb
+          - name: Windows
+            os: windows-latest
+            targets: --win nsis portable
+            files: dist/*.exe
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The ~100 MB open sample library is downloaded by `npm ci` (postinstall); cache it between runs.
+      - name: Cache sample library
+        uses: actions/cache@v4
+        with:
+          path: assets/samples
+          key: samples-${{ hashFiles('src/engine/sample-manifest.js', 'scripts/fetch-samples.mjs') }}
+
+      - name: Install dependencies (and fetch samples)
+        run: npm ci
+
+      - name: Make sure the sample library is complete
+        run: npm run fetch-samples
+
+      - name: Set version from tag
+        shell: bash
+        run: npm version --no-git-tag-version --allow-same-version "${TAG#v}"
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build installers
+        run: npx electron-builder ${{ matrix.targets }} --publish never
+
+      - name: Attach to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" ${{ matrix.files }} --clobber --repo "$GITHUB_REPOSITORY"
