@@ -4,6 +4,7 @@ import { h, knob, drag, canvas2d, palette } from './dom.js';
 import { EQ_BANDS, EQ_RANGE, response } from '../engine/eq.js';
 import { EFFECTS, defaultFx } from '../engine/effects.js';
 import { AMP_MODELS, AMP_KNOBS, defaultAmp } from '../engine/amp.js';
+import { isAutomated } from '../engine/automation.js';
 import { store, regenerate } from '../state.js';
 import { STYLES, PARTS, PART_LABELS } from '../music/band.js';
 import { getInstrument } from '../engine/instruments.js';
@@ -24,8 +25,9 @@ export class SmartControls {
       return;
     }
     const live = (key, v) => { track[key] = v; this.app.engine.sync(store.project); };
+    // Automated settings are marked: their knob sets the value used where there's no curve.
     const k = (label, key, opts = {}) => knob({
-      label, value: track[key] ?? opts.def ?? 0, ...opts,
+      label: isAutomated(track, key) ? label + ' ⓐ' : label, value: track[key] ?? opts.def ?? 0, ...opts,
       onStart: () => store.beginGesture(),
       onInput: v => live(key, v),
       onCommit: () => store.endGesture(),

@@ -610,6 +610,49 @@ module.exports = async function flows(win, app) {
   await new Promise(r => setTimeout(r, 200));
   await shot('17-editor-dark');
 
+  await check('automation: lane editing and playback follow the curve', `
+    store.dirty = false;
+    await app.newSong();
+    const t = app.addTrack('instrument', 'chip', 'Auto');
+    store.update(() => { t.reverb = 0; t.regions.push({ id: 'r', start: 0, length: 16, loopLength: 16, notes: [{ t: 0, d: 16, n: 60, v: 0.8 }] }); });
+    // Open the lane and draw a volume ramp with the mouse: -40 dB at beat 0 up to +0 dB at beat 8.
+    app.arrange.toggleAutomation(t);
+    await new Promise(r => setTimeout(r, 100));
+    // Each edit redraws the arrangement, so find the lane's canvas afresh for every click.
+    const click = (beat, v) => {
+      const cv = document.querySelector('.auto-lane[data-id="' + t.id + '"] canvas');
+      const box = cv.getBoundingClientRect(), g = app.arrange.autoGeom(cv, 'volume');
+      const p = { clientX: box.left + beat * store.ui.zoom, clientY: box.top + g.y(v), bubbles: true, button: 0 };
+      cv.dispatchEvent(new MouseEvent('mousedown', p));
+      window.dispatchEvent(new MouseEvent('mouseup', p));
+    };
+    click(0, -40);
+    click(8, 0);
+    const pts = t.automation?.volume || [];
+    if (pts.length !== 2 || Math.abs(pts[0].v + 40) > 1 || Math.abs(pts[1].v) > 1 || pts[1].t !== 8) return 'points ' + JSON.stringify(pts);
+    // Parked at beat 4, the channel sits halfway (-20 dB).
+    app.seek(4);
+    await new Promise(r => setTimeout(r, 150));
+    const parked = app.engine.nodes.get(t.id).channel.volume.value;
+    if (Math.abs(parked + 20) > 2) return 'parked volume ' + parked;
+    // Rendered, the level rises across the ramp; pan automation moves it left to right.
+    const { renderProject } = await import('./engine/engine.js');
+    const buf = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 12, tail: 0 });
+    const spb = 60 / store.project.bpm;
+    const rms = (b, beat, ch = 0) => { const d = b.getChannelData(ch), a = Math.floor(beat * spb * b.sampleRate), n = Math.floor(0.2 * b.sampleRate); let e = 0; for (let i = a; i < a + n; i++) e += d[i] * d[i]; return Math.sqrt(e / n); };
+    const early = rms(buf, 1), mid = rms(buf, 4), late = rms(buf, 9);
+    if (!(early < mid && mid < late && late > early * 10)) return 'volume ramp ' + [early, mid, late].map(v => v.toFixed(4));
+    store.update(() => { t.automation = { pan: [{ t: 0, v: -1 }, { t: 8, v: 1 }] }; });
+    const pb = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 12, tail: 0 });
+    const leftEarly = rms(pb, 1, 0) / (rms(pb, 1, 1) + 1e-9), leftLate = rms(pb, 9, 0) / (rms(pb, 9, 1) + 1e-9);
+    // Starting playback partway through also picks up the curve.
+    const part = await renderProject(store.project, app.engine.audioPool, { start: 6, end: 10, tail: 0 });
+    const ratioPart = rms(part, 0, 0) / (rms(part, 0, 1) + 1e-9);
+    return leftEarly > 5 && leftLate < 0.2 && ratioPart < 1 ? 'ok volume ' + early.toFixed(3) + ' -> ' + late.toFixed(3) + ', pan L/R ' + leftEarly.toFixed(1) + ' -> ' + leftLate.toFixed(2) : 'pan ' + leftEarly + ' ' + leftLate + ' part ' + ratioPart;`);
+
+  await new Promise(r => setTimeout(r, 200));
+  await shot('18-automation');
+
   await check('piano roll follows the selected track and region', `
     store.dirty = false;
     await app.newSong();

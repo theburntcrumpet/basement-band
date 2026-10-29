@@ -43,6 +43,8 @@ open it and start making music.
   latency), input device, recording offset, count-in, metronome level, and light/dark/system theme.
 - **Mixing**: per-track volume, pan, tone, drive, reverb, echo and a Bass/Mid/Treble EQ; master
   bus compressor/limiter.
+- **Automation**: press a track's **A** button for a lane under it; click to add points for volume,
+  pan, reverb, echo, tone or EQ, drag them, right-click to remove. Plays back (and exports) exactly.
 - **Effects**: Vinyl (crackle, pops, age, wow), Tape, Radio and Lo-Fi, on any track or on the whole
   mix (Master FX). Crackle and hiss only play while the song does.
 - **Export**: the whole song or the cycle range as MP3 (128/192/320 kbps), FLAC, or 16/24-bit WAV.
@@ -108,7 +110,8 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
   interface's hardware direct monitoring gives zero-latency (dry) monitoring while recording.
 - **One time signature and tempo per song:** no tempo or meter changes partway through.
 - **Audio doesn't follow tempo changes:** recordings and samples keep their speed and length.
-- **No automation:** volume, pan and effect settings are fixed for the whole song.
+- **Automation covers the mixer settings** (volume, pan, reverb, echo, tone, EQ), not effect or amp
+  knobs yet, and lanes don't move with regions.
 - **Songs embed recordings as WAV inside the `.bband` file**, so songs with long takes get large.
 - **User instruments are referenced, not copied:** move a SoundFont/SFZ and songs using it fall back
   to a stand-in synth until it is re-imported.
@@ -123,7 +126,7 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
 
 Roughly in priority order:
 
-1. **Automation lanes** for volume, pan, EQ and effects.
+1. ~~Automation lanes~~ (done for mixer settings; effect and amp knobs next).
 2. **Sustain pedal and MIDI CC** support for SoundFont/SFZ instruments and recording.
 3. **MIDI file import/export.**
 4. **Tempo-following audio** (time-stretching loops and recordings).

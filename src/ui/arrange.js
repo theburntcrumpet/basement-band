@@ -1,6 +1,7 @@
 // The arrangement: ruler, cycle range, track headers, lanes and regions.
 
-import { h, $, drag, contextMenu, canvas2d } from './dom.js';
+import { h, $, drag, contextMenu, canvas2d, palette } from './dom.js';
+import { AUTO_PARAMS, AUTO_PARAM, curve, valueAt, staticValue, normalize } from '../engine/automation.js';
 import { store, uid, TRACK_COLORS, resizeRegion } from '../state.js';
 import { meter } from '../music/meter.js';
 import { getInstrument } from '../engine/instruments.js';
@@ -90,7 +91,11 @@ export class Arrange {
     this.empty.classList.toggle('hidden', p.tracks.length > 0);
     this.renderRuler(width);
     this.meterEls.clear();
-    this.tracksEl.replaceChildren(...p.tracks.map((t, i) => this.renderTrack(t, i, width)));
+    this.autoCanvases = [];
+    this.tracksEl.replaceChildren(...p.tracks.flatMap((t, i) => {
+      const row = this.renderTrack(t, i, width);
+      return store.ui.autoLanes?.has(t.id) ? [row, this.renderAutomationLane(t, width)] : [row];
+    }));
     this.setPlayhead(store.ui.playhead);
   }
 
@@ -128,6 +133,7 @@ export class Arrange {
       h('div', { class: 'track-buttons' },
         h('button', { class: 'mute' + (track.mute ? ' on' : ''), title: 'Mute', onclick: e => { e.stopPropagation(); store.update(() => { track.mute = !track.mute; }); } }, 'M'),
         h('button', { class: 'solo' + (track.solo ? ' on' : ''), title: 'Solo', onclick: e => { e.stopPropagation(); store.update(() => { track.solo = !track.solo; }); } }, 'S'),
+        h('button', { class: 'auto' + (store.ui.autoLanes?.has(track.id) ? ' on' : '') + (track.automation && Object.values(track.automation).some(c => c.length) ? ' has' : ''), title: 'Automation: change volume, pan, effects or EQ over time', onclick: e => { e.stopPropagation(); this.toggleAutomation(track); } }, 'A'),
         track.type === 'audio' ? h('button', { class: 'monitor' + (this.app.monitorTrack === track.id ? ' on' : ''), title: 'Monitor input (hear yourself through this track)', onclick: e => { e.stopPropagation(); this.app.toggleMonitor(track); } }, '🎧') : null,
       ),
       h('div', { class: 'track-mix' },
@@ -309,6 +315,129 @@ export class Arrange {
 
   clearRecording() {
     this.tracksEl.querySelectorAll('.region.recording').forEach(el => el.remove());
+  }
+
+  // ------------------------------------------------------------ automation lanes
+
+  toggleAutomation(track) {
+    const lanes = (store.ui.autoLanes ||= new Set());
+    if (lanes.has(track.id)) lanes.delete(track.id); else lanes.add(track.id);
+    this.app.refresh();
+  }
+
+  autoParamOf(track) {
+    return (store.ui.autoParam ||= {})[track.id] || Object.keys(track.automation || {}).find(k => track.automation[k].length) || 'volume';
+  }
+
+  renderAutomationLane(track, width) {
+    const key = this.autoParamOf(track);
+    const spec = AUTO_PARAM[key];
+    const select = h('select', {
+      class: 'auto-select',
+      onchange: e => { store.ui.autoParam[track.id] = e.target.value; this.app.refresh(); },
+      onmousedown: e => e.stopPropagation(),
+    }, AUTO_PARAMS.map(p => h('option', { value: p.key, selected: p.key === key }, (curve(track, p.key).length ? '● ' : '') + p.label)));
+    const clear = h('button', {
+      class: 'text small-text', title: `Remove all ${spec.label} automation`, disabled: !curve(track, key).length,
+      onclick: () => store.update(() => { delete track.automation[key]; }),
+    }, 'Clear');
+    const header = h('div', { class: 'auto-header' }, h('span', { class: 'auto-label' }, 'Automation'), select, clear);
+    const cv = h('canvas', { class: 'auto-canvas' });
+    const lane = h('div', { class: 'auto-area', style: { width: width + 'px' } }, cv);
+    this.autoCanvases.push({ cv, track, key, width });
+    requestAnimationFrame(() => this.drawAutomation(cv, track, key, width));
+    cv.addEventListener('mousedown', e => this.autoDown(e, cv, track, key, width));
+    cv.addEventListener('dblclick', e => this.autoDelete(e, cv, track, key));
+    cv.addEventListener('contextmenu', e => { e.preventDefault(); this.autoDelete(e, cv, track, key); });
+    cv.addEventListener('mousemove', e => { cv.style.cursor = this.autoHit(e, cv, track, key) >= 0 ? 'grab' : 'crosshair'; });
+    return h('div', { class: 'auto-lane', dataset: { id: track.id } }, header, lane);
+  }
+
+  autoGeom(cv, key) {
+    const spec = AUTO_PARAM[key];
+    const ht = cv.clientHeight || 54, pad = 6;
+    return {
+      y: v => pad + (1 - (v - spec.min) / (spec.max - spec.min)) * (ht - pad * 2),
+      v: y => Math.max(spec.min, Math.min(spec.max, spec.min + (1 - (y - pad) / (ht - pad * 2)) * (spec.max - spec.min))),
+      ht,
+    };
+  }
+
+  drawAutomation(cv, track, key, width) {
+    const c = palette();
+    const z = this.zoom;
+    const g = this.autoGeom(cv, key);
+    const ctx = canvas2d(cv, width, g.ht);
+    ctx.clearRect(0, 0, width, g.ht);
+    const bar = this.meter.barBeats;
+    ctx.strokeStyle = c.lineSoft || '#8884';
+    for (let b = 0; b * z < width; b += bar) { ctx.beginPath(); ctx.moveTo(Math.round(b * z) + 0.5, 0); ctx.lineTo(Math.round(b * z) + 0.5, g.ht); ctx.stroke(); }
+    const points = curve(track, key);
+    ctx.font = '11px system-ui, sans-serif';
+    if (!points.length) {
+      const y = g.y(staticValue(track, key));
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = c.faint;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = c.faint;
+      ctx.fillText(`Click to add ${AUTO_PARAM[key].label.toLowerCase()} automation`, 8 + this.scroll.scrollLeft, Math.min(g.ht - 6, y + 14));
+      return;
+    }
+    ctx.strokeStyle = c.accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, g.y(points[0].v));
+    for (const p of points) ctx.lineTo(p.t * z, g.y(p.v));
+    ctx.lineTo(width, g.y(points[points.length - 1].v));
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    for (const p of points) {
+      ctx.fillStyle = c.accent;
+      ctx.beginPath(); ctx.arc(p.t * z, g.y(p.v), 4, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  autoHit(e, cv, track, key) {
+    const r = cv.getBoundingClientRect(), g = this.autoGeom(cv, key);
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    return curve(track, key).findIndex(p => Math.abs(p.t * this.zoom - x) < 7 && Math.abs(g.y(p.v) - y) < 7);
+  }
+
+  autoDown(e, cv, track, key, width) {
+    if (e.button !== 0) return;
+    const r = cv.getBoundingClientRect(), g = this.autoGeom(cv, key);
+    const at = ev => ({ t: Math.max(0, this.snap((ev.clientX - r.left) / this.zoom, ev.shiftKey)), v: g.v(ev.clientY - r.top) });
+    store.beginGesture();
+    track.automation ||= {};
+    const points = (track.automation[key] ||= []);
+    let i = this.autoHit(e, cv, track, key);
+    let point;
+    if (i >= 0) point = points[i];
+    else {
+      point = at(e);
+      points.push(point);
+    }
+    track.automation[key] = normalize(points);
+    const show = () => {
+      this.drawAutomation(cv, track, key, width);
+      this.app.engine.sync(store.project);
+    };
+    show();
+    drag(e, (_dx, _dy, ev) => {
+      Object.assign(point, at(ev));
+      track.automation[key] = normalize(track.automation[key]);
+      show();
+    }, () => { store.endGesture(); this.app.refresh(); });
+  }
+
+  autoDelete(e, cv, track, key) {
+    const i = this.autoHit(e, cv, track, key);
+    if (i < 0) return;
+    store.update(() => {
+      track.automation[key].splice(i, 1);
+      if (!track.automation[key].length) delete track.automation[key];
+    });
   }
 
   setPlayhead(beats) {

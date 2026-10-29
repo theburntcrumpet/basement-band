@@ -5,6 +5,7 @@ import { meter } from '../music/meter.js';
 import { EQ_BANDS } from './eq.js';
 import { FxSlot } from './effects.js';
 import { AmpSlot } from './amp.js';
+import { AUTO_PARAMS, curve, valueAt, staticValue, rampsFrom } from './automation.js';
 
 const Tone = window.Tone;
 const PPQ = 192;
@@ -93,20 +94,37 @@ export class TrackNode {
     this.instrumentId = null;
   }
 
-  apply(track, muted) {
+  // The audio param behind each automatable setting, and how a setting value maps onto it.
+  autoTarget(key) {
+    switch (key) {
+      case 'volume': return { param: this.channel.volume, map: v => v };
+      case 'pan': return { param: this.channel.pan, map: v => v };
+      case 'reverb': return { param: this.reverbSend.gain, map: v => Math.pow(Math.max(0, v), 1.5) };
+      case 'echo': return { param: this.delaySend.gain, map: v => Math.max(0, v) * 0.7 };
+      case 'tone': return { param: this.filter.frequency, map: v => 400 * Math.pow(50, v) };
+      default: {
+        const i = EQ_BANDS.findIndex(b => b.key === key);
+        return i >= 0 ? { param: this.eq[i].gain, map: v => v } : null;
+      }
+    }
+  }
+
+  // Mixer settings. `beat` is where the song is parked: automated settings take their curve's value
+  // there. While playing (beat null) automated settings are left to the scheduled ramps.
+  apply(track, muted, beat = 0) {
     const now = Tone.now();
-    this.channel.volume.rampTo(track.volume, 0.05, now);
-    this.channel.pan.rampTo(track.pan, 0.05, now);
     this.channel.mute = muted;
-    this.filter.frequency.rampTo(400 * Math.pow(50, track.tone ?? 1), 0.05, now);
-    EQ_BANDS.forEach((b, i) => this.eq[i].gain.rampTo(track[b.key] || 0, 0.05, now));
+    for (const p of AUTO_PARAMS) {
+      const points = curve(track, p.key);
+      if (points.length && beat == null) continue;
+      const { param, map } = this.autoTarget(p.key);
+      param.rampTo(map(points.length ? valueAt(points, beat) : staticValue(track, p.key)), 0.05, now);
+    }
     this.fx.setConfig(track.fx);
     this.amp.setConfig(track.amp);
     const d = track.drive || 0;
     this.drive.distortion = 0.1 + 0.75 * d;
     this.drive.wet.value = Math.min(1, d * 2);
-    this.reverbSend.gain.rampTo(Math.pow(track.reverb ?? 0, 1.5), 0.05, now);
-    this.delaySend.gain.rampTo((track.echo ?? 0) * 0.7, 0.05, now);
   }
 
   setInstrument(id, buffers) {
@@ -195,6 +213,26 @@ function once(fn) {
   };
 }
 
+// Automation: each curve point starts a linear ramp to the next, timed from the transport.
+// Playback starting mid-curve begins with the interpolated value; cycle repeats re-seed at the start.
+function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat }) {
+  for (const p of AUTO_PARAMS) {
+    const points = curve(track, p.key);
+    if (!points.length) continue;
+    const { param, map } = node.autoTarget(p.key);
+    const play = r => time => {
+      param.cancelScheduledValues(time);
+      param.setValueAtTime(map(r.v), time);
+      if (r.to != null) param.linearRampToValueAtTime(map(r.toV), time + (r.to - r.at) * spb);
+    };
+    for (const r of rampsFrom(points, from)) transport.schedule(once(play(r)), ticks(r.at));
+    if (cycle) {
+      const r = rampsFrom(points, cycle.start)[0];
+      transport.schedule(once(t => { if (isRepeat()) play(r)(t); }), ticks(cycle.start));
+    }
+  }
+}
+
 // Schedules a whole project onto a transport.
 //   from:      the beat playback starts at; audio already under way there starts partway through
 //   cycle:     the cycle range, if on; audio spanning its start restarts partway on each repeat
@@ -205,6 +243,7 @@ export function scheduleProject(transport, project, nodes, audioPool, { from = 0
   for (const track of project.tracks) {
     const node = nodes.get(track.id);
     if (!node) continue;
+    scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat });
     for (const region of track.regions) {
       if (track.type === 'audio') {
         const buffer = audioPool.get(region.audioId);
@@ -296,7 +335,7 @@ export class Engine extends EventTarget {
         node = new TrackNode(this.buses, { meter: true });
         this.nodes.set(track.id, node);
       }
-      node.apply(track, isMuted(project, track));
+      node.apply(track, isMuted(project, track), this.playing ? null : this.cursor || 0);
       if (track.type !== 'audio' && node.instrumentId !== track.instrument && this.pending.get(track.id) !== track.instrument) {
         this.loadTrackInstrument(track.id, track.instrument);
       }
@@ -400,6 +439,11 @@ export class Engine extends EventTarget {
       try { src.stop(time); } catch { /* already stopped */ }
       this.audioSources.delete(src);
     }
+  }
+
+  // Where the song is parked (for automation values while stopped).
+  setCursor(beats) {
+    this.cursor = beats;
   }
 
   stop() {
@@ -628,7 +672,7 @@ export async function renderProject(project, audioPool, { start = 0, end, tail =
     const nodes = new Map();
     for (const track of project.tracks) {
       const node = new TrackNode(buses);
-      node.apply(track, isMuted(project, track));
+      node.apply(track, isMuted(project, track), start);
       if (track.type !== 'audio') {
         const res = loaded.get(track.id);
         node.setInstrument(res.id, res.buffers);

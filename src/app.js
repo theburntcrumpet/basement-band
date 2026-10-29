@@ -190,6 +190,8 @@ class App {
     const rec = this.recording;
     this.recording = null;
     this.engine.stop();
+    this.engine.setCursor(store.ui.playhead);
+    this.engine.sync(store.project);
     $('#btn-play').classList.remove('on');
     $('#btn-record').classList.remove('on');
     this.arrange.clearRecording();
@@ -198,7 +200,9 @@ class App {
 
   seek(beats) {
     store.ui.playhead = Math.max(0, beats);
+    this.engine.setCursor(store.ui.playhead);
     if (this.engine.playing) this.engine.setPosition(store.ui.playhead);
+    else this.engine.sync(store.project); // automated settings follow the playhead
     this.arrange.setPlayhead(store.ui.playhead);
   }
 
