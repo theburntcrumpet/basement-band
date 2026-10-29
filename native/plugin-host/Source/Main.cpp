@@ -310,18 +310,20 @@ private:
     }
 
     // Plugin windows on Linux go through X11 (XWayland on Wayland desktops), where the display scale
-    // JUCE detects can be wrong. The app knows the real one (or the user's choice) and sends it; we
-    // apply whatever correction gets there. Open windows are closed, so editors are rebuilt at the
-    // new size the next time they're shown.
+    // JUCE detects can be wrong. The app knows the real one (or the user's choice) and sends it; each
+    // editor is scaled by whatever correction gets there. For VST3 plugins JUCE passes this on as the
+    // plugin's content scale (the desktop-wide scale factor isn't, so that wouldn't resize them).
+    // Open windows are closed, so editors are rebuilt at the new size the next time they're shown.
+    float editorScale = 1.0f;
+
     void setScale (double wanted)
     {
-        auto& desktop = Desktop::getInstance();
-        const auto* display = desktop.getDisplays().getPrimaryDisplay();
-        const double global = desktop.getGlobalScaleFactor();
-        const double detected = display != nullptr && display->scale > 0 ? display->scale / global : 1.0;
-        const auto factor = (float) jlimit (0.5, 4.0, wanted / detected);
-        if (approximatelyEqual (factor, desktop.getGlobalScaleFactor()))
+        const auto* display = Desktop::getInstance().getDisplays().getPrimaryDisplay();
+        const double detected = display != nullptr && display->scale > 0 ? display->scale : 1.0;
+        const auto factor = (float) jlimit (0.25, 4.0, wanted / detected);
+        if (approximatelyEqual (factor, editorScale))
             return;
+        editorScale = factor;
         std::vector<std::shared_ptr<Instance>> all;
         {
             std::lock_guard<std::mutex> l (mapLock);
@@ -334,7 +336,6 @@ private:
                 inst->window.reset();
                 sendJson (object ({ { "event", "editorClosed" }, { "inst", (int) inst->id } }));
             }
-        desktop.setGlobalScaleFactor (factor);
     }
 
     //==============================================================================
@@ -426,6 +427,7 @@ private:
                     auto* editor = inst->plugin->hasEditor() ? inst->plugin->createEditorAndMakeActive() : nullptr;
                     if (editor == nullptr)
                         editor = new GenericAudioProcessorEditor (*inst->plugin);
+                    editor->setScaleFactor (editorScale);
                     inst->window = std::make_unique<EditorWindow> (*inst, title, editor);
                 }
                 if (title.isNotEmpty())
