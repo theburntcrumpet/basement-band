@@ -400,6 +400,21 @@ class App {
     this.refresh();
   }
 
+  // Picks a cabinet impulse response for a track's amp (and remembers it for next time).
+  async loadCabinetIR(track) {
+    const path = await window.host?.pickIR();
+    if (!path) return;
+    const name = path.split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+    this.settings.irFiles = [{ path, name }, ...(this.settings.irFiles || []).filter(f => f.path !== path)].slice(0, 12);
+    await window.host.setSettings(this.settings);
+    try {
+      await this.engine.loadIR(path);
+    } catch {
+      return;
+    }
+    store.update(() => { track.amp = { ...track.amp, cab: 'ir', ir: { path, name } }; });
+  }
+
   setInputChannel(track, channel) {
     store.update(() => { track.input = { ...(track.input || {}), channel }; });
     if (this.monitorTrack === track.id) this.engine.setMonitor(track.id, channel);
@@ -1156,6 +1171,7 @@ class App {
       const sampleRate = fmt.ext === 'mp3' && !MP3_RATES.includes(rate) ? 44100 : rate;
       bar.style.width = '15%';
       await this.engine.prepareAudio(p);
+      await this.engine.prepareIRs(p);
       const buffer = await renderProject(p, this.engine.audioPool, { ...range, sampleRate, bufferFor: this.engine.bufferFor });
       status.textContent = `Encoding ${fmt.ext.toUpperCase()}…`;
       const bytes = await encodeAudio(buffer, formatId, f => { bar.style.width = `${15 + f * 85}%`; });

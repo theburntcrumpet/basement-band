@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('host', {
   pickAudioFiles: () => ipcRenderer.invoke('audio:pick'),
   pickFolder: () => ipcRenderer.invoke('folder:pick'),
   pickInstrumentFiles: () => ipcRenderer.invoke('instrument:pick'),
+  pickIR: () => ipcRenderer.invoke('ir:pick'),
   allowInstrumentFile: p => ipcRenderer.invoke('instrument:allow', p),
   pathForFile: file => webUtils.getPathForFile(file),
   scanFolder: dir => ipcRenderer.invoke('folder:scan', dir),

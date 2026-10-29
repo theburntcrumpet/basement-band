@@ -36,8 +36,9 @@ open it and start making music.
 - **Recording**: record your mic or audio interface onto audio tracks (pick the device and input
   1, 2 or both; latency compensation; count-in), or record MIDI keyboards and Musical Typing onto
   instrument tracks.
-- **Guitar & bass**: a "Guitar / Bass" track with an amp sim (Clean, Crunch, Lead, Bass: gain,
-  tone stack, presence, noise gate, speaker cabinet). Monitor through it while you play; recordings
+- **Guitar & bass**: a "Guitar / Bass" track with an amp sim (Clean, Vintage, Crunch, Lead, Metal,
+  Bass: gain, tone stack, presence, noise gate) and a speaker cabinet: four built-in voicings, or
+  **Load IR…** to use any cabinet impulse response WAV. Monitor through it while you play; recordings
   stay clean (DI), so you can change the amp afterwards. Monitoring latency depends on your OS audio
   (shown in the app; ~24 ms on Linux/PipeWire with Low-latency mode).
 - **Editing**: piano roll and drum grid with Pointer, Pencil, Eraser and Box-select tools; copy,
@@ -148,7 +149,7 @@ Roughly in priority order:
 7. **Native low-latency audio helper** (JACK/PipeWire on Linux, ASIO/WASAPI exclusive on Windows)
    running the amp sim for sub-10 ms guitar monitoring; the same helper would host
    **VST3/CLAP plugins** as a new instrument source.
-8. **More amp and cabinet models**, plus impulse-response loading for cabinets.
+8. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
 9. **macOS builds** and code signing on all platforms.
 10. **Arrangement markers** (verse/chorus) and a song-structure view for the Session Band.
 

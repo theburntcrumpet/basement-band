@@ -5,7 +5,7 @@ import { meter } from '../music/meter.js';
 import { bpmAt, secAt, beatAt, secBetween, changesFrom, tempoPoints } from '../music/tempo.js';
 import { EQ_BANDS } from './eq.js';
 import { FxSlot } from './effects.js';
-import { AmpSlot } from './amp.js';
+import { AmpSlot, irBuffers } from './amp.js';
 import { AUTO_PARAMS, curve, valueAt, staticValue, rampsFrom } from './automation.js';
 
 const Tone = window.Tone;
@@ -367,6 +367,7 @@ export class Engine extends EventTarget {
       if (!ids.has(id)) { node.dispose(); this.nodes.delete(id); }
     }
     for (const track of project.tracks) {
+      if (track.amp?.cab === 'ir' && track.amp.ir?.path && !irBuffers.has(track.amp.ir.path) && window.host) this.loadIR(track.amp.ir.path);
       let node = this.nodes.get(track.id);
       if (!node) {
         node = new TrackNode(this.buses, { meter: true });
@@ -430,6 +431,29 @@ export class Engine extends EventTarget {
   }
 
   // Schedules everything from `from` (the playback start, or the current position for edits while playing).
+  // ---------------------------------------------------------------- cabinet impulse responses
+
+  loadIR(path) {
+    this.irLoads ||= new Map();
+    if (!this.irLoads.has(path)) {
+      const job = window.host.readFile(path)
+        .then(bytes => Tone.getContext().rawContext.decodeAudioData(bytes))
+        .then(buf => { irBuffers.set(path, buf); if (this.project) this.sync(this.project); return buf; });
+      job.catch(err => {
+        this.irLoads.delete(path);
+        this.dispatchEvent(new CustomEvent('warning', { detail: `Couldn't load the cabinet IR ${path.split(/[\\/]/).pop()}; using a built-in cabinet. (${err.message})` }));
+      });
+      this.irLoads.set(path, job);
+    }
+    return this.irLoads.get(path);
+  }
+
+  // Loads every IR the song's amps use (export waits on this).
+  prepareIRs(project = this.project) {
+    const paths = project.tracks.map(t => t.amp).filter(a => a?.cab === 'ir' && a.ir?.path).map(a => a.ir.path);
+    return Promise.allSettled([...new Set(paths)].map(p => this.loadIR(p)));
+  }
+
   // ---------------------------------------------------------------- tempo-following audio
 
   stretchKey(region, factor) {

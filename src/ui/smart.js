@@ -3,7 +3,7 @@
 import { h, knob, drag, canvas2d, palette } from './dom.js';
 import { EQ_BANDS, EQ_RANGE, response } from '../engine/eq.js';
 import { EFFECTS, defaultFx } from '../engine/effects.js';
-import { AMP_MODELS, AMP_KNOBS, defaultAmp } from '../engine/amp.js';
+import { AMP_MODELS, AMP_KNOBS, CABS, defaultAmp, cabChoice } from '../engine/amp.js';
 import { isAutomated } from '../engine/automation.js';
 import { store, regenerate } from '../state.js';
 import { STYLES, PARTS, PART_LABELS } from '../music/band.js';
@@ -113,11 +113,30 @@ export class SmartControls {
 
   ampSection(track, sync) {
     const amp = track.amp || { model: 'off' };
-    const model = h('select', { class: 'wide-select', onchange: e => store.update(() => { track.amp = e.target.value === 'off' ? { model: 'off' } : { ...defaultAmp(e.target.value), cab: amp.cab ?? true }; }) },
-      Object.entries(AMP_MODELS).map(([id, m]) => h('option', { value: id, selected: id === (amp.model || 'off') }, m.name)));
+    // Switching model keeps a loaded IR (the cabinet is usually chosen separately from the amp).
+    const model = h('select', { class: 'wide-select', onchange: e => store.update(() => {
+      const keep = amp.cab === 'ir' ? { cab: 'ir', ir: amp.ir } : {};
+      track.amp = e.target.value === 'off' ? { model: 'off' } : { ...defaultAmp(e.target.value), ...keep };
+    }) }, Object.entries(AMP_MODELS).map(([id, m]) => h('option', { value: id, selected: id === (amp.model || 'off') }, m.name)));
     const on = amp.model && amp.model !== 'off';
-    const cab = h('label', { class: 'check' },
-      h('input', { type: 'checkbox', checked: amp.cab !== false, disabled: !on, onchange: e => store.update(() => { track.amp = { ...track.amp, cab: e.target.checked }; }) }), 'Speaker cabinet');
+    const current = cabChoice(amp);
+    const irs = this.app.settings.irFiles || [];
+    const cab = h('select', {
+      class: 'wide-select', disabled: !on, title: 'Speaker cabinet',
+      onchange: e => {
+        const v = e.target.value;
+        if (v === 'load') { e.target.value = current === 'ir' ? 'ir:' + amp.ir.path : current; return this.app.loadCabinetIR(track); }
+        store.update(() => {
+          if (v.startsWith('ir:')) { const f = irs.find(x => x.path === v.slice(3)) || amp.ir; track.amp = { ...track.amp, cab: 'ir', ir: { path: f.path, name: f.name } }; }
+          else { track.amp = { ...track.amp, cab: v }; delete track.amp.ir; }
+        });
+      },
+    },
+    Object.entries(CABS).map(([id, c]) => h('option', { value: id, selected: current === id }, c.name)),
+    h('option', { value: 'off', selected: current === 'off' }, 'No cabinet'),
+    irs.length || amp.ir ? h('optgroup', { label: 'Impulse responses' },
+      [...(amp.ir && !irs.some(f => f.path === amp.ir.path) ? [amp.ir] : []), ...irs].map(f => h('option', { value: 'ir:' + f.path, selected: current === 'ir' && amp.ir?.path === f.path }, f.name))) : null,
+    h('option', { value: 'load' }, 'Load IR…'));
     const knobs = on ? AMP_KNOBS.map(k => knob({
       label: k.label, value: amp[k.key] ?? k.def, center: k.def,
       onStart: () => store.beginGesture(),

@@ -15,6 +15,20 @@ module.exports = async function flows(win, app) {
     results.push(`${ok ? 'PASS' : 'FAIL'} ${name}: ${r}`);
   };
   await new Promise(r => setTimeout(r, 1200));
+  // A dark-sounding cabinet IR (one-pole low-pass at ~700 Hz) for the IR test, written as a WAV.
+  const irDir = '/tmp/basement-band-test-ir';
+  fs.mkdirSync(irDir, { recursive: true });
+  {
+    const sr = 48000, n = 4096, a = Math.exp(-2 * Math.PI * 700 / sr);
+    const pcm = Buffer.alloc(n * 2);
+    let y = 0;
+    for (let i = 0; i < n; i++) { y = (1 - a) * (i === 0 ? 1 : 0) + a * y; pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, y * 20)) * 32767), i * 2); }
+    const head = Buffer.alloc(44);
+    head.write('RIFF', 0); head.writeUInt32LE(36 + pcm.length, 4); head.write('WAVE', 8); head.write('fmt ', 12);
+    head.writeUInt32LE(16, 16); head.writeUInt16LE(1, 20); head.writeUInt16LE(1, 22); head.writeUInt32LE(sr, 24);
+    head.writeUInt32LE(sr * 2, 28); head.writeUInt16LE(2, 32); head.writeUInt16LE(16, 34); head.write('data', 36); head.writeUInt32LE(pcm.length, 40);
+    fs.writeFileSync(irDir + '/dark-cab.wav', Buffer.concat([head, pcm]));
+  }
 
   await check('drummer quick start', `
     app.quickStart('drums');
@@ -824,6 +838,45 @@ module.exports = async function flows(win, app) {
 
   await new Promise(r => setTimeout(r, 200));
   await shot('19-tempo');
+
+  await check('amp: new models and cabinet impulse responses', `
+    store.dirty = false;
+    await app.newSong();
+    const { renderProject } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { defaultAmp, irBuffers } = await import('./engine/amp.js');
+    const rate = 44100, n = rate * 2;
+    const di = new AudioBuffer({ length: n, sampleRate: rate, numberOfChannels: 1 });
+    const d = di.getChannelData(0);
+    for (let i = 0; i < n; i++) { const t = i / rate; let v = 0; for (let h = 1; h <= 6; h++) v += Math.sin(2 * Math.PI * 82.4 * h * t) * 0.3 / h * Math.exp(-t * 1.2); d[i] = v; }
+    const pool = new Map([['di', di]]);
+    const render = amp => {
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack('audio', null, 'G'), { reverb: 0, amp });
+      t.regions.push({ id: 'r', start: 0, length: 4, offset: 0, audioId: 'di' });
+      p.tracks.push(t);
+      return renderProject(p, pool, { start: 0, end: 4, tail: 0.1 });
+    };
+    const ratio = async buf => {
+      const total = (() => { const x = buf.getChannelData(0); let e = 0; for (let i = 4410; i < 66150; i++) e += x[i] * x[i]; return Math.sqrt(e / 61740); })();
+      const hp = await Tone.Offline(() => { const pl = new Tone.Player(buf); pl.chain(new Tone.Filter({ type: 'highpass', frequency: 2500, rolloff: -48 }), Tone.getDestination()); pl.start(0); }, buf.duration);
+      const x = hp.getChannelData(0); let e = 0; for (let i = 4410; i < 66150; i++) e += x[i] * x[i];
+      return { total, bright: Math.sqrt(e / 61740) / total };
+    };
+    const vintage = await ratio(await render({ ...defaultAmp('vintage'), gate: 0 }));
+    const metal = await ratio(await render({ ...defaultAmp('metal'), gate: 0 }));
+    if (!(vintage.total > 0.01 && metal.total > 0.01 && metal.bright > vintage.bright * 1.5)) return 'models ' + JSON.stringify({ vintage, metal });
+    // Load the IR through the real path, then compare the same amp with a built-in cabinet and the IR.
+    const path = '/tmp/basement-band-test-ir/dark-cab.wav';
+    await app.engine.loadIR(path);
+    if (!irBuffers.has(path)) return 'IR not loaded';
+    const builtIn = await ratio(await render({ ...defaultAmp('crunch'), gate: 0, cab: 'closed412' }));
+    const withIr = await ratio(await render({ ...defaultAmp('crunch'), gate: 0, cab: 'ir', ir: { path, name: 'dark-cab' } }));
+    const missing = await ratio(await render({ ...defaultAmp('crunch'), gate: 0, cab: 'ir', ir: { path: '/nope/missing.wav', name: 'gone' } }));
+    if (!(withIr.total > 0.005 && withIr.bright < builtIn.bright * 0.5)) return 'IR effect ' + JSON.stringify({ builtIn, withIr });
+    return Math.abs(missing.bright - (await ratio(await render({ ...defaultAmp('crunch'), gate: 0 }))).bright) < 0.02
+      ? 'ok metal brighter than vintage (' + metal.bright.toFixed(3) + ' vs ' + vintage.bright.toFixed(3) + '), IR darkens the cab (' + withIr.bright.toFixed(3) + ' vs ' + builtIn.bright.toFixed(3) + '), missing IR falls back'
+      : 'missing IR fallback ' + missing.bright;`);
 
   await check('piano roll follows the selected track and region', `
     store.dirty = false;

@@ -88,6 +88,7 @@ function allowInstrument(file) {
 
 function allowSettingsRoots(settings) {
   (settings.sampleFolders || []).forEach(d => readableRoots.add(d));
+  for (const f of settings.irFiles || []) readableRoots.add(path.dirname(f.path || f));
   for (const e of settings.userInstruments || []) {
     if (e.kind === 'folder') readableRoots.add(e.path);
     else allowInstrument(e.path);
@@ -122,10 +123,11 @@ function registerIpc(win) {
     // Only folders and files the user picked this session may be added to the library.
     const known = new Set([...readableRoots]);
     const current = await loadSettings();
-    const before = new Set([...(current.sampleFolders || []), ...(current.userInstruments || []).map(e => e.path)]);
+    const before = new Set([...(current.sampleFolders || []), ...(current.userInstruments || []).map(e => e.path), ...(current.irFiles || []).map(f => f.path)]);
     const ok = p => before.has(p) || known.has(p) || known.has(path.dirname(p));
     s.sampleFolders = (s.sampleFolders || []).filter(ok);
     s.userInstruments = (s.userInstruments || []).filter(e => e && typeof e.path === 'string' && ok(e.path));
+    s.irFiles = (s.irFiles || []).filter(f => f && typeof f.path === 'string' && (before.has(f.path) || known.has(path.dirname(f.path))));
     await saveSettings(s);
   });
 
@@ -181,6 +183,18 @@ function registerIpc(win) {
     if (r.canceled) return [];
     r.filePaths.forEach(p => readableRoots.add(path.dirname(p)));
     return r.filePaths;
+  });
+
+  // Speaker-cabinet impulse responses for the amp.
+  ipcMain.handle('ir:pick', async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: 'Load Cabinet Impulse Response',
+      filters: [{ name: 'Impulse responses', extensions: ['wav', 'aif', 'aiff', 'flac'] }],
+      properties: ['openFile'],
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    readableRoots.add(path.dirname(r.filePaths[0]));
+    return r.filePaths[0];
   });
 
   ipcMain.handle('instrument:pick', async () => {

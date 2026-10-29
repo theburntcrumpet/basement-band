@@ -7,11 +7,39 @@ const Tone = window.Tone;
 
 export const AMP_MODELS = {
   off: { name: 'Off' },
-  clean: { name: 'Clean', stages: 1, gainRange: [1, 6], tighten: 70, mid: 650, bright: 3, power: 1.2, cabLow: 75, cabHigh: 6500, level: 1.6 },
-  crunch: { name: 'Crunch', stages: 1, gainRange: [3, 60], tighten: 90, mid: 800, bright: 2, power: 1.8, cabLow: 85, cabHigh: 5200, level: 0.9 },
-  lead: { name: 'Lead', stages: 2, gainRange: [6, 120], tighten: 130, mid: 700, bright: 1, power: 2.4, cabLow: 90, cabHigh: 4800, level: 0.75 },
-  bass: { name: 'Bass', stages: 1, gainRange: [1, 18], tighten: 30, mid: 500, bright: 0, power: 1.4, cabLow: 40, cabHigh: 3800, level: 1.2 },
+  clean: { name: 'Clean', stages: 1, gainRange: [1, 6], tighten: 70, mid: 650, bright: 3, power: 1.2, cab: 'open212', level: 1.6 },
+  vintage: { name: 'Vintage', stages: 1, gainRange: [1.5, 20], tighten: 70, mid: 600, bright: 4, power: 1.4, cab: 'open212', level: 1.3 },
+  crunch: { name: 'Crunch', stages: 1, gainRange: [3, 60], tighten: 90, mid: 800, bright: 2, power: 1.8, cab: 'combo112', level: 0.9 },
+  lead: { name: 'Lead', stages: 2, gainRange: [6, 120], tighten: 130, mid: 700, bright: 1, power: 2.4, cab: 'closed412', level: 0.75 },
+  metal: { name: 'Metal', stages: 2, gainRange: [12, 300], tighten: 170, mid: 750, bright: 2, power: 2.8, cab: 'closed412', level: 0.6 },
+  bass: { name: 'Bass', stages: 1, gainRange: [1, 18], tighten: 30, mid: 500, bright: 0, power: 1.4, cab: 'bass115', level: 1.2 },
 };
+
+// Speaker cabinets, voiced with filters: low/high roll-off and a few resonances [Hz, Q, dB].
+// 'ir' plays a loaded impulse response instead; 'off' skips the cabinet (e.g. into a real amp).
+export const CABS = {
+  combo112: { name: '1×12 Combo', low: 80, high: 5600, res: [[120, 1, 3], [2300, 1.4, 4], [650, 1, -2]] },
+  open212: { name: '2×12 Open Back', low: 70, high: 6500, res: [[110, 1, 2], [1800, 1.2, 3], [3500, 1.5, 2]] },
+  closed412: { name: '4×12 Closed Back', low: 90, high: 4800, res: [[100, 1.2, 4], [2400, 1.4, 5], [600, 1, -3]] },
+  bass115: { name: '1×15 Bass', low: 40, high: 3500, res: [[80, 1, 3], [800, 1, -2], [2000, 1, 1]] },
+};
+
+function cabKeyFor(amp) {
+  const choice = cabChoice(amp);
+  if (choice === 'ir') return irBuffers.has(amp.ir.path) ? `ir:${amp.ir.path}` : (AMP_MODELS[amp.model] || AMP_MODELS.crunch).cab;
+  return choice;
+}
+
+// Decoded impulse responses by file path (filled by the engine; shared by live and export graphs).
+export const irBuffers = new Map();
+
+// Which cabinet an amp setting means (older songs stored cab: true/false).
+export function cabChoice(amp) {
+  const m = AMP_MODELS[amp?.model] || AMP_MODELS.crunch;
+  if (amp?.cab === false || amp?.cab === 'off') return 'off';
+  if (amp?.cab === 'ir' && amp.ir?.path) return 'ir';
+  return CABS[amp?.cab] ? amp.cab : m.cab;
+}
 
 export const AMP_KNOBS = [
   { key: 'gain', label: 'Gain', def: 0.5 },
@@ -24,10 +52,12 @@ export const AMP_KNOBS = [
 ];
 
 export function defaultAmp(model = 'crunch') {
-  const amp = { model, cab: true };
+  const amp = { model, cab: AMP_MODELS[model]?.cab || 'combo112' };
   for (const k of AMP_KNOBS) amp[k.key] = k.def;
   if (model === 'clean') amp.gain = 0.35;
   if (model === 'lead') amp.gate = 0.45;
+  if (model === 'metal') { amp.gate = 0.55; amp.mid = 0.32; amp.gain = 0.6; }
+  if (model === 'vintage') { amp.gain = 0.4; amp.mid = 0.42; }
   return amp;
 }
 
@@ -63,9 +93,10 @@ export class AmpSlot {
     this.build('off');
   }
 
-  build(model) {
+  build(model, amp = {}) {
     this.teardown();
     this.model = model;
+    this.cabKey = null;
     const ctx = this.ctx;
     const inNode = ctx.createGain();
     Tone.connect(this.input, inNode);
@@ -89,8 +120,21 @@ export class AmpSlot {
     const power = ctx.createWaveShaper();
     power.curve = tubeCurve(m.power, 0.02);
     power.oversample = '2x';
-    const cab = [biquad(ctx, 'highpass', m.cabLow, 0.8), biquad(ctx, 'peaking', 120, 1, 3), biquad(ctx, 'peaking', 2200, 1.4, 4),
-      biquad(ctx, 'peaking', 600, 1, -2), biquad(ctx, 'lowpass', m.cabHigh, 0.8), biquad(ctx, 'lowpass', m.cabHigh, 0.6)];
+    // Cabinet: a loaded IR if there is one (and it's decoded), otherwise filter voicing; or none.
+    let choice = cabChoice(amp);
+    const ir = choice === 'ir' ? irBuffers.get(amp.ir.path) : null;
+    if (choice === 'ir' && !ir) choice = m.cab;
+    let cab = [];
+    if (ir) {
+      const conv = ctx.createConvolver();
+      conv.buffer = ir;
+      cab = [conv];
+    } else if (choice !== 'off') {
+      const c = CABS[choice];
+      cab = [biquad(ctx, 'highpass', c.low, 0.8), ...c.res.map(([f, q, g]) => biquad(ctx, 'peaking', f, q, g)),
+        biquad(ctx, 'lowpass', c.high, 0.8), biquad(ctx, 'lowpass', c.high, 0.6)];
+    }
+    this.cabKey = ir ? `ir:${amp.ir.path}` : choice;
     const cabBypass = ctx.createGain();
     const cabOut = ctx.createGain();
     const level = ctx.createGain();
@@ -124,7 +168,8 @@ export class AmpSlot {
 
   setConfig(amp) {
     const model = amp?.model && AMP_MODELS[amp.model] ? amp.model : 'off';
-    if (model !== this.model) this.build(model);
+    // Rebuild when the model or the cabinet changes (including an IR finishing loading).
+    if (model !== this.model || (model !== 'off' && cabKeyFor(amp) !== this.cabKey)) this.build(model, amp);
     if (model === 'off') return;
     const a = { ...defaultAmp(model), ...amp };
     const n = this.nodes, m = n.m, t = this.ctx.currentTime;
@@ -143,8 +188,9 @@ export class AmpSlot {
     n.presence.gain.setTargetAtTime(db(a.presence) * 0.6, t, 0.02);
     // Gate knob: off at zero, then -90 dB (barely there) up to -30 dB (only loud playing gets through).
     if (n.gate) n.gate.parameters.get('threshold').setValueAtTime(a.gate < 0.02 ? -100 : -90 + a.gate * 60, t);
-    n.cabOut.gain.setTargetAtTime(a.cab !== false ? 1 : 0, t, 0.02);
-    n.cabBypass.gain.setTargetAtTime(a.cab !== false ? 0 : 0.6, t, 0.02);
+    const hasCab = n.cab.length > 0;
+    n.cabOut.gain.setTargetAtTime(hasCab ? 1 : 0, t, 0.02);
+    n.cabBypass.gain.setTargetAtTime(hasCab ? 0 : 0.6, t, 0.02);
     // Level: 0.5 is unity-ish after each model's own compensation.
     n.level.gain.setTargetAtTime(m.level * Math.pow(10, ((a.level - 0.5) * 24) / 20), t, 0.02);
   }
