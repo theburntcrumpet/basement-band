@@ -504,6 +504,21 @@ module.exports = async function native(win, app) {
     if (diff > 0.5) return 'export level differs by ' + diff.toFixed(2) + ' dB';
     return 'ok kicks exactly 24000 frames apart, meters and playhead follow, live note in ' + latencyMs.toFixed(1) + ' ms (128-sample buffer), export matches within ' + diff.toFixed(2) + ' dB';`);
 
+  await check('the native engine recovers from a helper crash', `
+    if (!app.engine.nativePlayback) return 'native playback not on';
+    const { bridge } = await import('./engine/plugins.js');
+    window.host.plugins.send({ cmd: 'test:crash' });
+    await new Promise(r => setTimeout(r, 2500));
+    if (!app.engine.native.device) return 'device not reopened';
+    app.seek(0);
+    await app.togglePlay();
+    await new Promise(r => setTimeout(r, 1200));
+    const cap = await bridge.call('test:capture', { frames: 48000 });
+    await app.stop();
+    const bin = atob(cap.audio); let peak = 0;
+    for (let i = 0; i < bin.length; i += 4) { const v = new DataView(new Uint8Array([bin.charCodeAt(i), bin.charCodeAt(i + 1), bin.charCodeAt(i + 2), bin.charCodeAt(i + 3)]).buffer).getFloat32(0, true); peak = Math.max(peak, Math.abs(v)); }
+    return peak > 0.05 ? 'ok reopened the device, resent the song and its samples, and plays again (peak ' + peak.toFixed(2) + ')' : 'silent after recovery (' + peak + ')';`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

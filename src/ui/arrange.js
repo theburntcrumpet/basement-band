@@ -312,20 +312,34 @@ export class Arrange {
       for (const n of notes) ctx.fillRect((n.t - start) * z, 2 + (top - n.n) * rowH, Math.max(2, n.d * z - 1), Math.max(1.5, rowH - 0.5));
       return;
     }
+    const spb = 60 / store.project.bpm;
+    const peakBar = (x, cw, d) => {
+      if (x + cw < 0) return;
+      let peak = 0;
+      for (let k = 0; k < d.length; k += 8) peak = Math.max(peak, Math.abs(d[k]));
+      ctx.fillRect(Math.max(0, x), height / 2 - (peak * height) / 2, Math.max(1, cw), Math.max(1, peak * height));
+    };
+    if (engine.recording?.native) {
+      // Recording through the native engine: chunks are on the device clock, where the song started
+      // at startedFrame (known once the count-in is over).
+      const s = engine.nativeState, dev = engine.native.device;
+      if (!dev || s.startedFrame < 0) return;
+      const latency = (dev.inputLatency || 0) + (dev.outputLatency || 0);
+      for (const c of engine.native.chunks || []) {
+        const x = (s.startedBeat + (c.first - latency - s.startedFrame) / dev.rate / spb - start) * z;
+        peakBar(x, (c.data.length / dev.rate / spb) * z, c.data);
+      }
+      return;
+    }
     const chunks = engine.recording?.chunks;
     const started = engine.startedAt;
     if (!chunks?.length || !started) return;
     // Place each captured chunk at its capture time; audio from the count-in falls left of the clip.
     const rate = window.Tone.getContext().sampleRate;
-    const spb = 60 / store.project.bpm;
     for (const c of chunks) {
       const d = c.data[0];
       const x = (started.beat + (c.frame / rate - started.time) / spb - start) * z;
-      const cw = (d.length / rate / spb) * z;
-      if (x + cw < 0) continue;
-      let peak = 0;
-      for (let k = 0; k < d.length; k += 8) peak = Math.max(peak, Math.abs(d[k]));
-      ctx.fillRect(Math.max(0, x), height / 2 - (peak * height) / 2, Math.max(1, cw), Math.max(1, peak * height));
+      peakBar(x, (d.length / rate / spb) * z, d);
     }
   }
 

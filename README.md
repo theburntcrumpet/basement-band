@@ -49,10 +49,13 @@ open it and start making music.
 - **Editing**: piano roll and drum grid with Pointer, Pencil, Eraser and Box-select tools; copy,
   cut, paste and duplicate for notes and regions; Alt-drag to copy; the piano keys light up for
   selected notes; region loop/resize/split; undo/redo.
-- **Low-latency guitar monitoring**: a native audio engine (JACK/ALSA on Linux; WASAPI, ASIO or
-  DirectSound on Windows) plays your amp, cabinet and effects live with only your interface's
-  buffering as delay (a few ms), and records the clean signal sample-accurately. It sounds the same
-  as playback: the native chain is a port of the app's own, checked to within 1 dB per octave.
+- **Native audio engine**: songs play through a native engine (JACK/ALSA on Linux; WASAPI, ASIO or
+  DirectSound on Windows) talking straight to your interface: instruments, plugins, mixer, effects,
+  automation and the metronome, with only the interface's buffering as delay. Guitars monitor through
+  the amp in a few milliseconds, keyboards and plugins play with low latency, and takes are recorded
+  sample-accurately on the same clock. Everything is a port of the app's original engine and is
+  checked against it (instruments, effects, automation and exports match to within about 1 dB, most
+  exactly); that engine remains as the fallback where the native one isn't available.
 - **Settings** (⚙ or Ctrl+,): audio performance mode (Stable for slower computers, Balanced, Low
   latency), input device, recording offset, count-in, metronome level, and light/dark/system theme.
 - **Mixing**: per-track volume, pan, tone, drive, reverb, echo and a Bass/Mid/Treble EQ; master
@@ -152,12 +155,12 @@ to that workflow run (under Artifacts) instead of a release.
 
 - **Audio performance:** if playback crackles or stutters on a slower computer, choose **Stable** in
   Settings (bigger buffers). **Low latency** trades smoothness for responsiveness.
-- **Latency:** guitar monitoring and recording go through the low-latency engine (Settings →
-  Low-latency engine): a few milliseconds plus your interface's converters. Song playback, playing
-  instruments live and everything else still run in Chromium's Web Audio (~25–60 ms output latency
-  depending on Settings → Audio performance) until the rest of the engine moves native (see the
-  roadmap). Native monitoring doesn't yet include a track's vinyl/tape/radio/lo-fi effect or the
-  Master FX, and records mono (a stereo input is mixed down).
+- **Latency:** with the native engine (Settings → Low-latency engine), monitoring and playing are a
+  few milliseconds plus your interface's converters. Without it (the helper isn't built, or the device
+  can't be opened) the app falls back to Chromium's Web Audio (~25–60 ms). The library's sound
+  previews still use Web Audio. Native recording is mono (a stereo input is mixed down).
+- **Recording alignment** uses the latencies the audio driver reports; if takes land consistently
+  early or late on your interface, adjust Settings → Recording offset.
 - **One time signature per song.** Tempo can change partway through (right-click the ruler), but
   the meter can't yet. An audio clip spanning a tempo change follows the tempo where it starts.
 - **Time-stretching** (WSOLA) keeps pitch and timing but can smear very dense or percussive audio at
@@ -192,11 +195,9 @@ Roughly in priority order:
 6. ~~Smaller song files~~ (recordings now stored as FLAC); optionally keep audio in a folder beside
    the song.
 7. ~~VST3 instrument plugins~~ (done, with Dexed bundled).
-8. **Native audio engine**, in stages:
-   1. ~~Live guitar monitoring and recording~~ (done: JACK/ALSA, WASAPI/ASIO/DirectSound).
-   2. Native instruments (samplers, SoundFonts/SFZ, plugins in-process) for low-latency playing.
-   3. The whole mixer native: all tracks, effects, automation and export; effect plugins on track
-      inserts; the remaining track effects and Master FX in the monitoring path.
+8. ~~Native audio engine~~ (done: monitoring, recording, instruments, plugins in-process, mixer,
+   effects, automation, metronome and export). Next: **effect plugins** on track inserts (now
+   straightforward), stereo native recording, and a loopback calibration for recording latency.
 9. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
 10. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
     Band build a whole song structure (intro, verses, choruses) in one go.
@@ -236,8 +237,12 @@ src/music/band.js           styles + drum/bass/comping generators
 src/engine/instruments.js   instrument library (samplers, synth presets, drum kits)
 src/engine/engine.js        mixer graph, scheduling, recording, offline export
 src/engine/plugins.js       plugin instruments: scanning, streaming from the helper, export
+src/engine/native-engine.js the song as the native engine plays it; native renders
+src/engine/native-audio.js  the native device: monitoring, recording, clock sync
 plugin-host.js              main-process side of plugin hosting (scan, helper process)
-native/plugin-host/         the native plugin helper (C++/JUCE, AGPL-3.0)
+native/plugin-host/         the native helper (C++/JUCE, AGPL-3.0): plugin hosting (Main.cpp), the
+                            audio device and monitoring (LiveAudio.h), the song engine (Song.h)
+                            and ports of the app's DSP (Dsp.h, Synth.h, TrackFx.h)
 src/ui/*                    arrange view, editors, smart controls, library
 scripts/fetch-samples.mjs   downloads the sample library
 scripts/fetch-plugins.mjs   downloads the bundled plugins (Dexed)

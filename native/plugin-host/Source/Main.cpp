@@ -569,6 +569,10 @@ private:
             }
             reply (req, true);
         }
+        else if (cmd == "test:crash" && SystemStats::getEnvironmentVariable ("BB_TEST_AUDIO", {}).isNotEmpty())
+        {
+            std::_Exit (3);   // automated checks of crash recovery only
+        }
         else if (cmd == "live:note")
         {
             // Straight to the audio thread: this is the latency you feel when playing.

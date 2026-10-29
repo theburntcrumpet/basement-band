@@ -80,8 +80,23 @@ class App {
     // If a plugin crashes the helper, restart it and reload every plugin from its last saved settings.
     bridge.addEventListener('crash', () => {
       for (const node of this.engine.nodes.values()) if (node.instrument?.selfScheduled) node.instrumentId = null;
-      toast('A plugin crashed. Plugins have been reloaded (changes since the last save may be lost).', 6000);
-      setTimeout(() => this.engine.sync(store.project), 500);
+      const playing = this.engine.playing;
+      if (playing) this.stop();
+      toast('The audio engine stopped unexpectedly (a plugin probably crashed). It has been restarted; plugin changes since the last save may be lost.', 6000);
+      setTimeout(async () => {
+        this.engine.sync(store.project);
+        // The native engine lost its device and samples with the helper: open it again.
+        if (this.engine.nativePlayback) {
+          try {
+            await this.engine.whenLoaded();
+            await this.engine.useNativePlayback(true);
+            const track = this.monitorTrack && store.track(this.monitorTrack);
+            if (track) { this.monitorTrack = null; await this.toggleMonitor(track); }
+          } catch (err) {
+            toast('Couldn\'t restart the low-latency engine: ' + err.message, 6000);
+          }
+        }
+      }, 500);
     });
     this.rescanPlugins();
   }
