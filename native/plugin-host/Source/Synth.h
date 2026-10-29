@@ -55,10 +55,13 @@ public:
     static std::shared_ptr<const Set> make (const std::vector<double>& partials, double phase)
     {
         static CriticalSection cacheLock;
-        static std::map<String, std::shared_ptr<const Set>> cache;
-        String key;
-        for (auto b : partials) key << String (b, 6) << ",";
-        key << "|" << String (phase, 6);
+        static std::map<uint64_t, std::shared_ptr<const Set>> cache;
+        // FNV-1a over the partials and phase: a cheap key (this used to build a long string).
+        uint64_t key = 1469598103934665603ull;
+        const auto mix = [&key] (double v) { uint64_t bits; memcpy (&bits, &v, 8); for (int i = 0; i < 8; ++i) { key ^= (bits >> (i * 8)) & 0xff; key *= 1099511628211ull; } };
+        for (auto b : partials) mix (b);
+        mix (phase);
+        mix ((double) partials.size());
         const ScopedLock l (cacheLock);
         if (auto it = cache.find (key); it != cache.end()) return it->second;
 
@@ -130,6 +133,19 @@ struct OscSettings
     int count = 3;
     double spread = 20, width = 0.2, phaseDeg = 0;
     std::vector<double> partials;  // for custom
+    // The wavetables for each oscillator in the stack, built ahead (see prepareTables()).
+    std::vector<std::shared_ptr<const Wavetable::Set>> tables;
+
+    // Builds the wavetables now, so starting a note never has to (it runs on the audio thread).
+    void prepareTables()
+    {
+        tables.clear();
+        if (type == "pulse") return;
+        const auto p = type == "custom" ? partials : basicPartials (type);
+        const int voices = fat ? count : 1;
+        for (int i = 0; i < voices; ++i)
+            tables.push_back (Wavetable::make (p, (phaseDeg + (fat ? (double) i / voices * 360.0 : 0.0)) * MathConstants<double>::pi / 180.0));
+    }
 
     static OscSettings parse (const var& o)
     {
@@ -143,6 +159,7 @@ struct OscSettings
         s.phaseDeg = (double) o.getProperty ("phase", 0.0);
         if (auto* a = o["partials"].getArray())
             for (auto& v : *a) s.partials.push_back ((double) v);
+        s.prepareTables();
         return s;
     }
 };
@@ -167,12 +184,8 @@ public:
             phaseOffsets[(size_t) i] = phaseDeg * MathConstants<double>::pi / 180.0;
             if (s.fat && voices > 1) detunes[(size_t) i] = std::pow (2.0, (-s.spread / 2 + s.spread / (voices - 1) * i) / 1200.0);
         }
-        tables.clear();
         ignoreUnused (freq);
-        if (s.type == "pulse") return;   // a thresholded triangle, built per sample
-        const auto partials = s.type == "custom" ? s.partials : basicPartials (s.type);
-        for (int i = 0; i < voices; ++i)
-            tables.push_back (Wavetable::make (partials, phaseOffsets[(size_t) i]));
+        tables = s.tables;   // built when the instrument was (a pulse needs none)
     }
 
     // One sample at frequency f (Hz). Like Chromium's OscillatorNode, the frequency is limited to
@@ -584,17 +597,18 @@ public:
         octaves = (double) o.getProperty ("octaves", 1.5);
         env = ToneEnvelope::parse (o["envelope"]); env.rate = sr; env.sustain = 0; env.attackCurve = "linear";
         gain = (float) toneVolume (o);
+        square.type = "square";
+        square.prepareTables();
     }
 
     void trigger (double hz, double velocity, int64 lengthSamples)
     {
         static const double ratios[6] = { 1.0, 1.483, 1.932, 2.546, 2.63, 3.897 };
-        OscSettings sq; sq.type = "square";
         for (int i = 0; i < 6; ++i)
         {
             freqs[i] = hz * ratios[i];
-            carriers[i].start (sq, freqs[i], rate);
-            modulators[i].start (sq, freqs[i] * harmonicity, rate);
+            carriers[i].start (square, freqs[i], rate);
+            modulators[i].start (square, freqs[i] * harmonicity, rate);
         }
         env.triggerAttack (velocity);
         t = 0; releaseAt = lengthSamples; active = true;
@@ -626,6 +640,7 @@ public:
 private:
     double rate = 48000, harmonicity = 5.1, modIndex = 32, resonance = 4000, octaves = 1.5;
     double freqs[6] {};
+    OscSettings square;
     Oscillator carriers[6], modulators[6];
     ToneEnvelope env;
     Biquad hp;

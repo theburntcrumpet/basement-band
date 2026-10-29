@@ -1313,9 +1313,13 @@ public:
         playingNow = playing && waitSamples == 0;
     }
 
+    // How long each block took in the last offline render (ms), for finding real-time spikes.
+    std::vector<float> blockTimes;
+
     // Offline: renders [start, end) plus a tail, at the engine's rate.
     AudioBuffer<float> render (double start, double end, double tail)
     {
+        blockTimes.clear();
         runCommands();   // the song set just before (no audio thread here)
         const int total = (int) std::ceil ((tempo.secBetween (start, end) + tail) * rate);
         const int stopAt = (int) std::llround (tempo.secBetween (start, end) * rate);
@@ -1337,7 +1341,9 @@ public:
                 if (n - first > 0) process (out.getWritePointer (0, pos + first), out.getWritePointer (1, pos + first), n - first);
                 continue;
             }
+            const auto t0 = Time::getHighResolutionTicks();
             process (out.getWritePointer (0, pos), out.getWritePointer (1, pos), n);
+            blockTimes.push_back ((float) Time::highResolutionTicksToSeconds (Time::getHighResolutionTicks() - t0) * 1000.0f);
         }
         return out;
     }

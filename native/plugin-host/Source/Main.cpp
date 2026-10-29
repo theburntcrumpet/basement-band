@@ -601,9 +601,15 @@ private:
                         auto inst = find ((uint32_t) id);
                         return inst ? std::make_shared<PluginLink> (inst, true) : nullptr;
                     };
-                    offline.prepare ((double) msg.getProperty ("rate", 48000.0), 512);
+                    offline.prepare ((double) msg.getProperty ("rate", 48000.0), (int) msg.getProperty ("block", 512));
                     offline.setSong (msg["song"]);
                     auto out = offline.render ((double) msg["start"], (double) msg["end"], (double) msg.getProperty ("tail", 2.5));
+                    if ((bool) msg.getProperty ("profile", false))
+                    {
+                        Array<var> times;
+                        for (auto t : offline.blockTimes) times.add (t);
+                        return reply (req, true, {}, object ({ { "blockTimes", times } }));
+                    }
                     if ((bool) msg.getProperty ("binary", false))
                     {
                         // Large renders (exports) come back as 'E' chunks, then the reply.

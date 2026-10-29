@@ -442,6 +442,29 @@ module.exports = async function native(win, app) {
     }
     return worst <= 1.5 ? 'ok loudness per 50 ms, each side: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('native rendering stays within its real-time budget at every chord change', `
+    const { resolveInstrument } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { songForNative } = await import('./engine/native-engine.js');
+    const { bridge } = await import('./engine/plugins.js');
+    const p = newProject(); p.bpm = 120;
+    const loaded = new Map();
+    // Chords on the synths that build wavetables, changing every bar, plus cymbals every eighth.
+    for (const [i, id] of ['glass-pad', 'vibes', 'saw-lead', 'electric-piano', 'warm-pad'].entries()) {
+      const t = newTrack('instrument', id, id);
+      t.regions.push({ id: 'r' + i, start: 0, length: 16, loopLength: 16, notes: [0, 4, 8, 12].flatMap((b, k) => [48, 52, 55, 59].map(n => ({ t: b, d: 4, n: n + k * 2 + i, v: 0.8 }))) });
+      p.tracks.push(t);
+      loaded.set(t.id, await resolveInstrument(id));
+    }
+    const kit = newTrack('drums', 'kit-electro', 'kit');
+    kit.regions.push({ id: 'k', start: 0, length: 16, loopLength: 16, notes: Array.from({ length: 32 }, (_, k) => ({ t: k / 2, d: 0.25, n: k % 4 === 3 ? 46 : 42, v: 0.8 })) });
+    p.tracks.push(kit);
+    loaded.set(kit.id, await resolveInstrument('kit-electro'));
+    const song = songForNative(p, loaded);
+    const res = await bridge.call('song:render', { song, start: 0, end: 16, tail: 0, rate: 48000, block: 128, profile: true }, 120000);
+    const budget = 128 / 48, worst = Math.max(...res.blockTimes), at = res.blockTimes.indexOf(worst) * 128 / 48000;
+    return worst < budget / 2 ? 'ok slowest 128-sample block ' + worst.toFixed(2) + ' ms of a ' + budget.toFixed(2) + ' ms budget' : 'block at ' + at.toFixed(2) + ' s took ' + worst.toFixed(2) + ' ms (budget ' + budget.toFixed(2) + ' ms)';`);
+
   await check('the app plays songs through the native engine (virtual interface)', `
     app.settings.native = { type: 'Test', buffer: 128 };
     app.settings.nativeAudio = true;
