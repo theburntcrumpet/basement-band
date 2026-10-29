@@ -74,6 +74,13 @@ try {
   if (!(peak > 0.01 && peak < 4)) fail('note level ' + peak);
   const state = await call('getState', { inst: 1 });
   if (!state.ok || !(state.state?.length > 10)) fail('state ' + JSON.stringify(state).slice(0, 200));
+  // The plugin window opens, and asking for 200% makes it twice the size of 100%.
+  const one = await call('show', { inst: 1, title: 'Dexed check', scale: 1 });
+  const two = await call('show', { inst: 1, title: 'Dexed check', scale: 2 });
+  if (!one.ok || !two.ok || !(one.width > 100)) fail('editor ' + JSON.stringify([one, two]));
+  const ratio = two.width / one.width;
+  if (Math.abs(ratio - 2) > 0.1) fail(`window scale: ${one.width}px at 100%, ${two.width}px at 200%`);
+  console.log(`editor window ${one.width}×${one.height} at 100%, ${two.width}×${two.height} at 200%`);
   console.log(`ok: Dexed played a note (peak ${peak.toFixed(3)}), state ${state.state.length} bytes, editor: ${loaded.hasEditor}`);
 } catch (err) {
   fail(err.message);

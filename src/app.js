@@ -97,9 +97,16 @@ class App {
     if (await window.host?.plugins?.addFolder()) this.rescanPlugins();
   }
 
+  // Plugin window size: the user's choice, or the screen's real scale (Electron knows it even on
+  // Wayland, where plugin windows run through XWayland and can come out tiny or blurry).
+  pluginScale() {
+    const v = this.settings.pluginScale;
+    return v && v !== 'auto' ? Number(v) : window.devicePixelRatio || 1;
+  }
+
   async openPluginWindow(track) {
     try {
-      if (!(await this.engine.openPluginEditor(track.id))) toast('The plugin is still loading');
+      if (!(await this.engine.openPluginEditor(track.id, this.pluginScale()))) toast('The plugin is still loading');
     } catch (err) {
       toast('Couldn\'t open the plugin window: ' + err.message);
     }
@@ -638,6 +645,9 @@ class App {
       onInput: v => { this.engine.click.volume.value = v; s.metronomeVolume = v; },
       onCommit: () => save(),
     });
+    const pluginScale = h('select', { class: 'wide-select', onchange: e => { s.pluginScale = e.target.value; save(); } },
+      [['auto', `Automatic (${Math.round((window.devicePixelRatio || 1) * 100)}%)`], ['1', '100%'], ['1.25', '125%'], ['1.5', '150%'], ['1.75', '175%'], ['2', '200%'], ['2.5', '250%'], ['3', '300%']]
+        .map(([v, l]) => h('option', { value: v, selected: String(s.pluginScale || 'auto') === v }, l)));
     const section = (title, ...body) => h('section', { class: 'settings-section' }, h('h3', {}, title), ...body);
     let close;
     close = modal(h('div', { class: 'settings' },
@@ -649,7 +659,9 @@ class App {
           h('span', { class: 'settings-desc' }, 'Nudges new recordings later (+) or earlier (−) if they land slightly off the beat.')),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: this.countIn, onchange: e => { this.countIn = e.target.checked; s.countIn = this.countIn; $('#btn-countin').classList.toggle('on', this.countIn); save(); } }), 'Count in one bar before recording'),
         clickVol),
-      section('Appearance', h('label', { class: 'field' }, h('span', {}, 'Theme'), theme)),
+      section('Appearance', h('label', { class: 'field' }, h('span', {}, 'Theme'), theme),
+        h('label', { class: 'field' }, h('span', {}, 'Plugin window size'), pluginScale,
+          h('span', { class: 'settings-desc' }, 'If plugin windows look too small or blurry on a high-resolution screen, pick a size here. Applies the next time a plugin window opens.'))),
       section('About',
         h('div', { class: 'settings-desc' }, 'Basement Band — free and open source (MIT). Sounds are CC0/CC-BY/GPL; see the credits.'),
         h('div', { class: 'row', style: { gap: '8px', marginTop: '8px' } },

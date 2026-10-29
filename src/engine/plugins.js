@@ -360,8 +360,9 @@ export class PluginInstrument {
   }
 
   // ---- plugin window and state
-  showEditor(title = this.title) {
-    return bridge.call('show', { inst: this.inst, title });
+  // scale: the size to draw the plugin window at (1 = 100%); 0 lets the helper decide.
+  showEditor(title = this.title, scale = 0) {
+    return bridge.call('show', { inst: this.inst, title, scale });
   }
 
   async getState() {

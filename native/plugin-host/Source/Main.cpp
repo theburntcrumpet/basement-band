@@ -309,6 +309,34 @@ private:
         }
     }
 
+    // Plugin windows on Linux go through X11 (XWayland on Wayland desktops), where the display scale
+    // JUCE detects can be wrong. The app knows the real one (or the user's choice) and sends it; we
+    // apply whatever correction gets there. Open windows are closed, so editors are rebuilt at the
+    // new size the next time they're shown.
+    void setScale (double wanted)
+    {
+        auto& desktop = Desktop::getInstance();
+        const auto* display = desktop.getDisplays().getPrimaryDisplay();
+        const double global = desktop.getGlobalScaleFactor();
+        const double detected = display != nullptr && display->scale > 0 ? display->scale / global : 1.0;
+        const auto factor = (float) jlimit (0.5, 4.0, wanted / detected);
+        if (approximatelyEqual (factor, desktop.getGlobalScaleFactor()))
+            return;
+        std::vector<std::shared_ptr<Instance>> all;
+        {
+            std::lock_guard<std::mutex> l (mapLock);
+            for (auto& [id, inst] : instances)
+                all.push_back (inst);
+        }
+        for (auto& inst : all)
+            if (inst->window != nullptr)
+            {
+                inst->window.reset();
+                sendJson (object ({ { "event", "editorClosed" }, { "inst", (int) inst->id } }));
+            }
+        desktop.setGlobalScaleFactor (factor);
+    }
+
     //==============================================================================
     void command (const var& msg)
     {
@@ -379,7 +407,8 @@ private:
         else if (cmd == "show" || cmd == "hide")
         {
             const String title = msg["title"];
-            MessageManager::callAsync ([this, cmd, instId, title, req]
+            const double scale = msg.getProperty ("scale", 0.0);
+            MessageManager::callAsync ([this, cmd, instId, title, req, scale]
             {
                 auto inst = find (instId);
                 if (inst == nullptr)
@@ -390,6 +419,8 @@ private:
                         inst->window->setVisible (false);
                     return reply (req, true);
                 }
+                if (scale > 0)
+                    setScale (scale);
                 if (inst->window == nullptr)
                 {
                     auto* editor = inst->plugin->hasEditor() ? inst->plugin->createEditorAndMakeActive() : nullptr;
@@ -401,7 +432,11 @@ private:
                     inst->window->setName (title);
                 inst->window->setVisible (true);
                 inst->window->toFront (true);
-                reply (req, true);
+                const auto* display = Desktop::getInstance().getDisplays().getPrimaryDisplay();
+                const double physical = display != nullptr ? display->scale : 1.0;
+                reply (req, true, {}, object ({ { "width", (int) std::lround (inst->window->getWidth() * physical) },
+                                                { "height", (int) std::lround (inst->window->getHeight() * physical) },
+                                                { "scale", physical } }));
             });
         }
         else if (cmd == "getState")

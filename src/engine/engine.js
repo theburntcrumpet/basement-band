@@ -469,11 +469,11 @@ export class Engine extends EventTarget {
     }
   }
 
-  async openPluginEditor(trackId) {
+  async openPluginEditor(trackId, scale = 0) {
     const node = this.nodes.get(trackId);
     const track = this.project.tracks.find(t => t.id === trackId);
     if (!node?.instrument?.selfScheduled) return false;
-    await node.instrument.showEditor(`${getInstrument(track.instrument).name} — ${track.name}`);
+    await node.instrument.showEditor(`${getInstrument(track.instrument).name} — ${track.name}`, scale);
     return true;
   }
 
