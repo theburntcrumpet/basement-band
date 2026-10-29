@@ -75,6 +75,17 @@ public:
     // Frames from each input click to the first output sample that answers it.
     std::vector<int> latencies() { const ScopedLock l (statsLock); return measured; }
 
+    // The most recent output (left channel), oldest first, and the device frame just after it.
+    std::pair<std::vector<float>, int64> recentOutput (int frames)
+    {
+        const ScopedLock l (statsLock);
+        frames = jmin (frames, (int) history.size());
+        std::vector<float> out ((size_t) frames);
+        const int size = (int) history.size();
+        for (int i = 0; i < frames; ++i) out[(size_t) i] = history[(size_t) ((historyPos - frames + i + size) % size)];
+        return { out, historyFrame };
+    }
+
 private:
     double rate = 48000;
     int block = 128;
@@ -82,6 +93,9 @@ private:
     AudioIODeviceCallback* callback = nullptr;
     CriticalSection statsLock;
     std::vector<int> measured;
+    std::vector<float> history = std::vector<float> (48000 * 10);
+    int historyPos = 0;
+    int64 historyFrame = 0;
 
     void run() override
     {
@@ -103,6 +117,11 @@ private:
             const float* ins[] = { in.getReadPointer (0), in.getReadPointer (1) };
             float* outs[] = { out.getWritePointer (0), out.getWritePointer (1) };
             callback->audioDeviceIOCallbackWithContext (ins, 2, outs, 2, block, {});
+            {
+                const ScopedLock l (statsLock);
+                for (int i = 0; i < block; ++i) { history[(size_t) historyPos] = out.getSample (0, i); historyPos = (historyPos + 1) % (int) history.size(); }
+                historyFrame = frame + block;
+            }
             if (waiting)
                 for (int i = 0; i < block; ++i)
                     if (std::abs (out.getSample (0, i)) > 0.01f || std::abs (out.getSample (1, i)) > 0.01f)
@@ -205,6 +224,8 @@ public:
     // it takes the interface over).
     String preferredType()
     {
+        // Automated tests use the virtual interface, never the real one.
+        if (SystemStats::getEnvironmentVariable ("BB_TEST_AUDIO", {}).isNotEmpty()) return "Test";
         for (auto name : { "JACK", "Windows Audio (Low Latency Mode)", "Windows Audio", "ALSA", "DirectSound" })
             for (auto* t : devices.getAvailableDeviceTypes())
                 if (t->getTypeName() == name)
@@ -295,6 +316,21 @@ public:
         if (auto* d = dynamic_cast<TestDevice*> (devices.getCurrentAudioDevice()))
             for (auto v : d->latencies()) out.add (v);
         return out;
+    }
+
+    // The virtual interface's recent output (for automated checks): base64 float32 and its end frame,
+    // with our own frame counter at the same moment (the two clocks differ by a constant).
+    var testCapture (int frames)
+    {
+        auto* o = new DynamicObject();
+        if (auto* d = dynamic_cast<TestDevice*> (devices.getCurrentAudioDevice()))
+        {
+            auto [data, end] = d->recentOutput (frames);
+            o->setProperty ("audio", Base64::toBase64 (data.data(), data.size() * sizeof (float)));
+            o->setProperty ("deviceEnd", (double) end);
+            o->setProperty ("frame", (double) frameCount.load());
+        }
+        return var (o);
     }
 
     //==============================================================================
@@ -464,7 +500,7 @@ private:
         auto* L = out[0];
         float* RR = numOut > 1 && out[1] != nullptr ? out[1] : bus.getWritePointer (4);
         // The song (when the app plays through the native engine), then the live input on top.
-        song.process (L, RR, n);
+        song.process (L, RR, n, start);
         if (! monitoring) return;
         chain.setRunning (song.isPlaying());
         master.fx.setRunning (song.isPlaying());
@@ -494,6 +530,10 @@ private:
         o->setProperty ("beat", song.currentBeat());
         o->setProperty ("playing", song.isPlaying());
         o->setProperty ("time", syncTime.load());
+        o->setProperty ("frame", (double) syncFrame.load());
+        o->setProperty ("rate", rate);
+        o->setProperty ("startedFrame", song.startedFrame());
+        o->setProperty ("startedBeat", song.startedBeat());
         o->setProperty ("meters", song.takeMeters());
         sendJson (var (o));
         // Recorded audio: [i64 first frame][f64 frame time][f64 frame of that time][f32 samples...]

@@ -16,6 +16,17 @@ export function heardContextTime({ first, frameTime, frame }, device, clock, out
   return output.contextTime + (perfMs - output.performanceTime) / 1000;
 }
 
+// Native playback: the song and the input run on the same device clock. What you play reaches input
+// frame F after the output and input latencies, so it answers the song at frame F − latency.
+//   started: {frame, beat} where the song started rolling (after any count-in)
+export function placeNativeTake({ first }, device, started, project, nudgeMs = 0) {
+  const latency = (device.inputLatency || 0) + (device.outputLatency || 0);
+  const songFrame = first - latency + (nudgeMs / 1000) * device.rate;
+  const skip = Math.max(0, Math.round(started.frame - songFrame));
+  const startBeat = beatAt(project, secAt(project, started.beat) + Math.max(0, songFrame - started.frame) / device.rate);
+  return { skip, startBeat };
+}
+
 // Where a take starts in the song, and how many of its frames came before playback started (the
 // count-in), given where playback started on the context clock.
 export function placeTake(heardTime, startedAt, project, rate, nudgeMs = 0) {

@@ -11,6 +11,7 @@
 //   'A'  rendered audio:  u32 seq, u32 inst, u32 frames, u32 channels, then planar float32
 //   'I'  recorded input:  i64 first frame, f64 clock time, f64 frame at that time, then float32 mono
 //   'S'  sample upload:   u32 id length, id (UTF-8), f64 rate, u32 channels, u32 frames, planar float32
+//   'E'  rendered song:   u32 request, u32 first frame, u32 frames, then planar float32 L and R
 //
 // Song playback (Song.h): song:set, transport:play, transport:stop, transport:seek, live:note,
 // song:render (offline, for export and checks).
@@ -599,6 +600,24 @@ private:
                     offline.prepare ((double) msg.getProperty ("rate", 48000.0), 512);
                     offline.setSong (msg["song"]);
                     auto out = offline.render ((double) msg["start"], (double) msg["end"], (double) msg.getProperty ("tail", 2.5));
+                    if ((bool) msg.getProperty ("binary", false))
+                    {
+                        // Large renders (exports) come back as 'E' chunks, then the reply.
+                        const uint32_t id = (uint32_t) (int) req;
+                        const int total = out.getNumSamples(), chunk = 1 << 16;
+                        std::vector<char> buf;
+                        for (int pos = 0; pos < total; pos += chunk)
+                        {
+                            const uint32_t len = (uint32_t) jmin (chunk, total - pos);
+                            buf.resize (12 + (size_t) len * 8);
+                            const uint32_t head[3] = { id, (uint32_t) pos, len };
+                            memcpy (buf.data(), head, 12);
+                            memcpy (buf.data() + 12, out.getReadPointer (0, pos), len * 4);
+                            memcpy (buf.data() + 12 + len * 4, out.getReadPointer (1, pos), len * 4);
+                            sendFrame ('E', buf.data(), buf.size());
+                        }
+                        return reply (req, true, {}, object ({ { "frames", total } }));
+                    }
                     MemoryBlock result;
                     for (int c = 0; c < 2; ++c) result.append (out.getReadPointer (c), sizeof (float) * (size_t) out.getNumSamples());
                     return reply (req, true, {}, object ({ { "frames", out.getNumSamples() }, { "output", Base64::toBase64 (result.getData(), result.getSize()) } }));
@@ -606,7 +625,7 @@ private:
                 reply (req, false, "Unknown command " + cmd);
             });
         }
-        else if (cmd.startsWith ("audio:") || cmd.startsWith ("monitor:") || cmd.startsWith ("record:") || cmd == "test:stats")
+        else if (cmd.startsWith ("audio:") || cmd.startsWith ("monitor:") || cmd.startsWith ("record:") || cmd.startsWith ("test:"))
         {
             // The clock is answered straight away (its timing is the point); the rest on the message thread.
             if (cmd == "audio:clock")
@@ -630,6 +649,7 @@ private:
                 if (cmd == "record:start") { l.startRecording(); return reply (req, true); }
                 if (cmd == "record:stop") { l.stopRecording(); return reply (req, true); }
                 if (cmd == "test:stats") return reply (req, true, {}, object ({ { "latencies", l.testStats() } }));
+                if (cmd == "test:capture") return reply (req, true, {}, l.testCapture ((int) msg.getProperty ("frames", 48000)));
                 if (cmd == "monitor:render")
                 {
                     // {track, bpm, masterVolume, rate, input: base64 float32 mono} -> base64 float32 L then R

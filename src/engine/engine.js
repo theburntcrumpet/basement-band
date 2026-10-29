@@ -9,7 +9,8 @@ import { AmpSlot, irBuffers } from './amp.js';
 import { AUTO_PARAMS, curve, valueAt, staticValue, rampsFrom } from './automation.js';
 import { PluginInstrument, pluginsReady, renderPluginTrack, bridge } from './plugins.js';
 import { NativeAudio } from './native-audio.js';
-import { heardContextTime, placeTake } from './take-placement.js';
+import { heardContextTime, placeTake, placeNativeTake } from './take-placement.js';
+import { songForNative, renderNative } from './native-engine.js';
 
 const Tone = window.Tone;
 const PPQ = 192;
@@ -140,6 +141,8 @@ export class TrackNode {
     this.instrument = instrument || createInstrument(id, buffers);
     this.instrument.output.connect(this.input);
     this.instrumentId = id;
+    // What was actually loaded (a stand-in synth may replace a missing instrument), for the native engine.
+    this.loaded = { id, buffers };
     if (old) {
       old.stopAll(Tone.now());
       setTimeout(() => old.dispose(), 3000);
@@ -345,6 +348,92 @@ export class Engine extends EventTarget {
     // The native low-latency engine for monitoring and recording, when enabled (see useNative()).
     this.native = new NativeAudio();
     this.nativeSettings = null;
+    // Native playback: the helper plays the song (transport, instruments, mixer, metronome); this
+    // engine stays for previews and as the fallback.
+    this.nativePlayback = false;
+    this.nativeState = { beat: 0, playing: false, at: 0, startedFrame: -1, startedBeat: 0 };
+    this.nativeMeters = {};
+    bridge.addEventListener('transport', e => this.onNativeTransport(e.detail));
+  }
+
+  // ---------------------------------------------------------------- native playback
+
+  // Turns native playback on (the device must be open) or off.
+  async useNativePlayback(on) {
+    if (on && !this.native.device) await this.native.open(this.nativeSettings, Tone.getContext().sampleRate);
+    if (this.playing) this.stop();
+    this.nativePlayback = !!on;
+    for (const { instrument } of this.pluginInstruments()) instrument.setStreaming(!on);
+    if (on && this.project) await this.sendNativeSong();
+  }
+
+  onNativeTransport(t) {
+    this.nativeMeters = t.meters || {};
+    this.nativeState.startedFrame = t.startedFrame;
+    this.nativeState.startedBeat = t.startedBeat;
+    this.nativeState.rate = t.rate;
+    // The playhead: the helper's position, extrapolated between reports (see position()).
+    if (this.nativeState.playing && t.playing) { this.nativeState.beat = t.beat; this.nativeState.at = performance.now(); }
+  }
+
+  // The song for the helper, from what each track has loaded.
+  nativeSong() {
+    const instruments = new Map();
+    for (const [trackId, node] of this.nodes) {
+      if (!node.loaded) continue;
+      instruments.set(trackId, node.instrument?.selfScheduled && node.instrument.inst ? { ...node.loaded, plugin: node.instrument } : node.loaded);
+    }
+    const song = songForNative(this.project, instruments, { metronome: this.metronome, bufferFor: this.bufferFor });
+    song.metronomeVolume = this.click?.volume.value ?? -10;
+    return song;
+  }
+
+  sendNativeSong() {
+    clearTimeout(this.nativeSongTimer);
+    this.nativeSongTimer = null;
+    return bridge.call('song:set', { song: this.nativeSong() }).catch(err => console.warn('native song', err));
+  }
+
+  // Edits arrive in bursts (knob drags): send the song at most every 40 ms.
+  scheduleNativeSong() {
+    if (!this.nativePlayback || this.nativeSongTimer) return;
+    this.nativeSongTimer = setTimeout(() => this.sendNativeSong(), 40);
+  }
+
+  // Meter levels in dB (post fader), for the track meters and the master meter.
+  meterDb(trackId) {
+    if (this.nativePlayback) return 20 * Math.log10(this.nativeMeters[trackId] || 1e-9);
+    const v = this.nodes.get(trackId)?.meter?.getValue();
+    return v == null ? -Infinity : typeof v === 'number' ? v : Math.max(...v);
+  }
+
+  masterDb() {
+    if (this.nativePlayback) return 20 * Math.log10(this.nativeMeters.master || 1e-9);
+    const m = this.masterMeter.getValue();
+    return typeof m === 'number' ? m : m[0];
+  }
+
+  // Renders a song natively for export, with fresh copies of any plugins (so the live ones keep playing).
+  async renderNativeExport(project, { start, end, tail = 2.5, sampleRate }) {
+    await this.collectPluginStates(project);
+    const temps = [];
+    try {
+      const instruments = new Map();
+      for (const [trackId, node] of this.nodes) {
+        if (!node.loaded) continue;
+        const track = project.tracks.find(t => t.id === trackId);
+        if (node.instrument?.selfScheduled && node.instrument.def && track) {
+          const state = track.pluginState?.id === track.instrument ? track.pluginState.data : null;
+          const copy = await bridge.load(node.instrument.def, { state, rate: sampleRate, offline: true });
+          temps.push(copy.inst);
+          instruments.set(trackId, { ...node.loaded, plugin: { inst: copy.inst } });
+        } else instruments.set(trackId, node.loaded);
+      }
+      const song = songForNative(project, instruments, { bufferFor: this.bufferFor });
+      return await renderNative(song, { start, end, tail, sampleRate, binary: true });
+    } finally {
+      for (const inst of temps) bridge.send('unload', { inst });
+    }
   }
 
   // settings: {type, input, output, buffer} to monitor and record through the native helper, or null
@@ -412,10 +501,14 @@ export class Engine extends EventTarget {
         this.loadTrackInstrument(track.id, track.instrument);
       }
     }
+    this.scheduleNativeSong();
     if (this.monitor?.native) {
       clearTimeout(this.nativeSync);
-      const { trackId, channel } = this.monitor;
-      this.nativeSync = setTimeout(() => this.native.monitor(project.tracks.find(t => t.id === trackId), project, channel).catch(() => {}), 20);
+      // Re-checked when it fires: monitoring may have stopped in the meantime.
+      this.nativeSync = setTimeout(() => {
+        const m = this.monitor;
+        if (m?.native) this.native.monitor(this.project.tracks.find(t => t.id === m.trackId), this.project, m.channel).catch(() => {});
+      }, 20);
     }
     this.transport.loop = !!project.cycle?.on;
     if (project.cycle) {
@@ -433,6 +526,7 @@ export class Engine extends EventTarget {
       const node = this.nodes.get(trackId);
       if (node && this.pending.get(trackId) === id) {
         node.setInstrument(res.id, res.buffers);
+        this.scheduleNativeSong();
         node.instrumentId = id;
         if (res.fallback) {
           const def = getInstrument(id);
@@ -469,7 +563,9 @@ export class Engine extends EventTarget {
     if (!node || this.pending.get(trackId) !== id) { instrument?.dispose(); return; }
     if (instrument) {
       node.setInstrument(id, null, instrument);
-      if (this.playing && this.pluginAnchor) instrument.setPlayback(this.project, track, this.anchorNow(), this.cycle());
+      if (this.nativePlayback) instrument.setStreaming(false);
+      else if (this.playing && this.pluginAnchor) instrument.setPlayback(this.project, track, this.anchorNow(), this.cycle());
+      this.scheduleNativeSong();
     } else {
       const fb = await resolveInstrument('electric-piano');
       node.setInstrument(fb.id, fb.buffers);
@@ -543,16 +639,31 @@ export class Engine extends EventTarget {
   }
 
   get playing() {
-    return this.transport.state === 'started';
+    return this.nativePlayback ? this.nativeState.playing : this.transport.state === 'started';
   }
 
   // Current audible position in beats.
   position() {
+    if (this.nativePlayback) {
+      const s = this.nativeState;
+      if (!s.playing) return s.beat;
+      const p = this.project;
+      let beat = beatAt(p, secAt(p, s.beat) + Math.max(0, performance.now() - s.at) / 1000);
+      const c = p.cycle;
+      if (c?.on && c.end > c.start && s.beat < c.end && beat >= c.end) beat = c.start + ((beat - c.end) % (c.end - c.start));
+      return beat;
+    }
     const t = this.transport.getTicksAtTime(Tone.immediate());
     return t / PPQ;
   }
 
   setPosition(beats) {
+    if (this.nativePlayback) {
+      this.nativeState.beat = Math.max(0, beats);
+      this.nativeState.at = performance.now();
+      bridge.call('transport:seek', { beat: Math.max(0, beats) }).catch(() => {});
+      return;
+    }
     this.transport.ticks = Math.max(0, Math.round(beats * PPQ));
     if (this.playing) this.startPlugins({ frame: Tone.now() * Tone.getContext().sampleRate, beat: Math.max(0, beats) });
   }
@@ -642,6 +753,7 @@ export class Engine extends EventTarget {
   // notes and automation from the scheduler's horizon (everything before it is already handed to the
   // audio clock), and playing audio clips from a moment after it, where the old ones stop.
   reschedule(startBeat) {
+    if (this.nativePlayback) return this.sendNativeSong();
     const live = startBeat == null && this.playing;
     let from = startBeat ?? 0, restartAt = from, stopAt = Tone.now();
     if (live) {
@@ -671,6 +783,16 @@ export class Engine extends EventTarget {
   async play(fromBeat, { countIn = false } = {}) {
     await this.resume();
     await this.prepareAudio();
+    if (this.nativePlayback) {
+      await this.sendNativeSong();
+      const m = meter(this.project.timeSig);
+      const rate = this.native.device?.rate || Tone.getContext().sampleRate;
+      const delay = countIn ? Math.round(m.barBeats * 60 / bpmAt(this.project, fromBeat) * rate) : 0;
+      this.nativeState = { ...this.nativeState, playing: true, beat: fromBeat, at: performance.now() + delay / rate * 1000, startedFrame: -1 };
+      this.startedAt = { time: Tone.now() + delay / rate, beat: fromBeat };
+      await bridge.call('transport:play', { beat: fromBeat, delaySamples: delay, countIn });
+      return this.startedAt.time;
+    }
     this.loopCount = 0;
     this.transport.bpm.value = bpmAt(this.project, fromBeat);
     this.reschedule(fromBeat);
@@ -708,6 +830,12 @@ export class Engine extends EventTarget {
   }
 
   stop() {
+    if (this.nativePlayback) {
+      this.nativeState.playing = false;
+      this.nativeState.beat = this.position();
+      bridge.call('transport:stop').catch(() => {});
+      return;
+    }
     this.setFxRunning(false);
     this.transport.stop();
     this.transport.cancel(0);
@@ -718,14 +846,21 @@ export class Engine extends EventTarget {
 
   // Live note input (musical typing, MIDI keyboard, piano roll previews).
   noteOn(trackId, midi, vel = 0.8) {
+    if (this.nativePlayback) return bridge.send('live:note', { track: trackId, midi, velocity: vel, on: true });
     this.nodes.get(trackId)?.instrument?.noteOn(midi, Tone.immediate(), vel);
   }
 
   noteOff(trackId, midi) {
+    if (this.nativePlayback) return bridge.send('live:note', { track: trackId, midi, on: false });
     this.nodes.get(trackId)?.instrument?.noteOff(midi, Tone.immediate());
   }
 
   previewNote(trackId, midi, vel = 0.8, dur = 0.35) {
+    if (this.nativePlayback) {
+      this.noteOn(trackId, midi, vel);
+      setTimeout(() => this.noteOff(trackId, midi), dur * 1000);
+      return;
+    }
     this.nodes.get(trackId)?.instrument?.play(midi, dur, Tone.immediate(), vel);
   }
 
@@ -883,6 +1018,7 @@ export class Engine extends EventTarget {
   // Sends the live input through a track's chain (amp, EQ, effects) so you hear what you play.
   setMonitor(trackId, channel = 'left') {
     if (this.nativeActive) {
+      clearTimeout(this.nativeSync);
       const track = trackId && this.project.tracks.find(t => t.id === trackId);
       this.monitor = track ? { trackId, channel, native: true } : null;
       this.native.monitor(track || null, this.project, channel).catch(() => {});
@@ -905,7 +1041,9 @@ export class Engine extends EventTarget {
     if (!force && (this.monitor || this.recording)) return;
     if (this.native.device) {
       this.monitor = null;
-      this.native.close();
+      // The device stays open while it plays the song; only monitoring stops.
+      if (this.nativePlayback) this.native.monitor(null, this.project).catch(() => {});
+      else this.native.close();
       return;
     }
     this.setMonitor(null);
@@ -984,8 +1122,11 @@ export class Engine extends EventTarget {
     this.closeInput();
     if (!take || !device || !this.startedAt) return null;
     const raw = Tone.getContext().rawContext;
-    const heard = heardContextTime(take, device, this.native.clock, raw.getOutputTimestamp());
-    const { skip, startBeat } = placeTake(heard, this.startedAt, this.project, device.rate, latencyMs);
+    // With native playback the song and the input share the device clock; otherwise go via the
+    // browser's output timestamps.
+    const { skip, startBeat } = this.nativePlayback && this.nativeState.startedFrame >= 0
+      ? placeNativeTake(take, device, { frame: this.nativeState.startedFrame, beat: this.nativeState.startedBeat }, this.project, latencyMs)
+      : placeTake(heardContextTime(take, device, this.native.clock, raw.getOutputTimestamp()), this.startedAt, this.project, device.rate, latencyMs);
     if (skip >= take.data.length) return null;
     const data = take.data.subarray(skip);
     let buffer = new AudioBuffer({ length: data.length, sampleRate: device.rate, numberOfChannels: 1 });

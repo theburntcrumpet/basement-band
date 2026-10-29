@@ -504,10 +504,7 @@ export class Arrange {
 
   updateMeters() {
     for (const [id, el] of this.meterEls) {
-      const meter = this.app.engine.nodes.get(id)?.meter;
-      if (!meter) continue;
-      const db = meter.getValue();
-      const v = typeof db === 'number' ? db : Math.max(...db);
+      const v = this.app.engine.meterDb(id);
       el.style.height = Math.max(0, Math.min(100, (v + 48) * (100 / 48))) + '%';
     }
   }

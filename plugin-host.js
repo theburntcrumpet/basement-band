@@ -87,7 +87,7 @@ class HostProcess {
         const body = pending.subarray(5, 4 + len);
         if (type === 'J') {
           try { this.send({ type: 'J', json: JSON.parse(body.toString('utf8')) }); } catch { /* ignore */ }
-        } else if (type === 'A' || type === 'I') {
+        } else if (type === 'A' || type === 'I' || type === 'E') {
           this.send({ type, data: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) });
         }
         pending = pending.subarray(4 + len);

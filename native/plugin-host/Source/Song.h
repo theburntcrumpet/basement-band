@@ -1006,7 +1006,6 @@ class TrackPlayer
 public:
     String id;
     std::unique_ptr<Instrument> instrument;
-    String instrumentKey;                  // rebuild the instrument when this changes
     std::shared_ptr<const std::vector<SongNote>> notes;   // sorted by beat
     std::shared_ptr<const std::vector<ClipSegment>> clips;  // sorted by beat
     VoicePool clipVoices;
@@ -1035,7 +1034,7 @@ public:
     Automation automation;
     const AudioBuffer<float>* ir = nullptr;
     bool settingsChanged = true;
-    float peak = 0;
+    std::atomic<float> peak { 0 };
 
     void prepare (double sampleRate, int block)
     {
@@ -1075,9 +1074,9 @@ public:
                     chain.automate (c.param, beats.playing ? Automation::playing (c, beat, anchor) : Automation::mapped (c.param, Automation::valueAt (c.points, beat)));
                 chain.process (m + o, rin + o, len, l + o, r + o, revL + o, revR + o, echoL + o, echoR + o);
             }
-        float pk = peak;
+        float pk = 0;
         for (int i = 0; i < n; ++i) { outL[i] += l[i]; outR[i] += r[i]; pk = jmax (pk, std::abs (l[i]), std::abs (r[i])); }
-        peak = pk;
+        if (pk > peak.load()) peak = pk;
     }
 
 private:
@@ -1091,9 +1090,10 @@ class Click
 {
 public:
     void prepare (double sr) { rate = sr; }
+    void setVolumeDb (float db) { volume = Decibels::decibelsToGain (db, -100.0f); }
     void trigger (double freq, float velocity, int offset)
     {
-        phase = 0; inc = freq / rate; delay = offset; t = 0; peak = velocity * Decibels::decibelsToGain (-10.0f); on = true;
+        phase = 0; inc = freq / rate; delay = offset; t = 0; peak = velocity * volume; on = true;
     }
     void render (float* L, float* R, int n)
     {
@@ -1114,7 +1114,7 @@ public:
 
 private:
     double rate = 48000, phase = 0, inc = 0, t = 0;
-    float peak = 0;
+    float peak = 0, volume = Decibels::decibelsToGain (-10.0f);
     int delay = 0;
     bool on = false;
 };
@@ -1133,9 +1133,10 @@ public:
     // Cabinet impulse responses by path (decoded by the helper).
     std::function<const AudioBuffer<float>* (const String&)> irs;
 
+    // While the device is stopped (audio thread not running).
     void prepare (double sampleRate, int maxBlock)
     {
-        const ScopedLock l (lock);
+        runCommands();
         rate = sampleRate;
         block = maxBlock;
         sends.prepare (rate, block);
@@ -1150,14 +1151,10 @@ public:
     {
         TempoMap newTempo;
         newTempo.set ((double) song.getProperty ("bpm", 120.0), song["tempoChanges"]);
-        std::vector<std::shared_ptr<TrackPlayer>> next;
-        std::map<String, std::shared_ptr<TrackPlayer>> existing;
-        {
-            const ScopedLock l (lock);
-            for (auto& t : tracks) existing[t->id] = t;
-        }
+        auto next = std::make_shared<std::vector<std::shared_ptr<TrackPlayer>>>();
+        auto& existing = known;   // the tracks as of the last setSong (message thread only)
         struct Change { std::shared_ptr<TrackPlayer> track; std::unique_ptr<Instrument> instrument; String key; bool newInstrument; TrackSettings settings; Automation automation; std::shared_ptr<const std::vector<SongNote>> notes; std::shared_ptr<const std::vector<ClipSegment>> clips; const AudioBuffer<float>* ir = nullptr; };
-        std::vector<Change> changes;
+        auto changes = std::make_shared<std::vector<Change>>();
         if (auto* arr = song["tracks"].getArray())
             for (auto& tv : *arr)
             {
@@ -1173,68 +1170,84 @@ public:
                 c.ir = c.settings.amp.cab == "ir" && irs ? irs (c.settings.amp.irPath) : nullptr;
                 const var inst = tv["instrument"];
                 c.key = JSON::toString (inst, true);
-                if (c.key != track->instrumentKey)
+                if (c.key != keys[id])
                 {
                     c.newInstrument = true;
                     c.instrument = buildInstrument (inst);
                     if (c.instrument) c.instrument->prepare (rate, block);
+                    keys[id] = c.key;
                 }
-                next.push_back (track);
-                changes.push_back (std::move (c));
+                next->push_back (track);
+                changes->push_back (std::move (c));
             }
-        const ScopedLock l (lock);
-        tempo = newTempo;
-        tracks = next;
-        for (auto& c : changes)
+        known.clear();
+        for (auto& t : *next) known[t->id] = t;
+        // Everything is built; the audio thread swaps it in at the start of a block.
+        const var cycle = song["cycle"], meterInfo = song["meter"];
+        post ([this, next, changes, newTempo, cycle, meterInfo, song]
         {
-            if (c.newInstrument) { trash.push_back (std::move (c.track->instrument)); c.track->instrument = std::move (c.instrument); c.track->instrumentKey = c.key; }
-            c.track->settings = c.settings;
-            c.track->automation = c.automation;
-            c.track->settingsChanged = true;
-            c.track->notes = c.notes;
-            c.track->clips = c.clips;
-            c.track->ir = c.ir;
-        }
-        cycleOn = (bool) song["cycle"].getProperty ("on", false);
-        cycleStart = (double) song["cycle"].getProperty ("start", 0.0);
-        cycleEnd = (double) song["cycle"].getProperty ("end", 4.0);
-        masterDb = (float) (double) song.getProperty ("masterVolume", 0.0);
-        masterFx = song["masterFx"];
-        metronome = (bool) song.getProperty ("metronome", false);
-        meterNum = jmax (1, (int) song["meter"].getProperty ("num", 4));
-        meterPulse = (double) song["meter"].getProperty ("pulse", 1.0);
-        meterCompound = (bool) song["meter"].getProperty ("compound", false);
-        masterChanged = true;
-        trashOld();
+            tempo = newTempo;
+            tracks = *next;
+            std::atomic_store (&published, std::shared_ptr<const std::vector<std::shared_ptr<TrackPlayer>>> (next));
+            for (auto& c : *changes)
+            {
+                // The replaced instrument ends up in `changes` and is freed with it.
+                if (c.newInstrument) std::swap (c.track->instrument, c.instrument);
+                c.track->settings = c.settings;
+                c.track->automation = c.automation;
+                c.track->settingsChanged = true;
+                c.track->notes = c.notes;
+                c.track->clips = c.clips;
+                c.track->ir = c.ir;
+            }
+            cycleOn = (bool) cycle.getProperty ("on", false);
+            cycleStart = (double) cycle.getProperty ("start", 0.0);
+            cycleEnd = (double) cycle.getProperty ("end", 4.0);
+            masterDb = (float) (double) song.getProperty ("masterVolume", 0.0);
+            masterFx = song["masterFx"];
+            metronome = (bool) song.getProperty ("metronome", false);
+            click.setVolumeDb ((float) (double) song.getProperty ("metronomeVolume", -10.0));
+            meterNum = jmax (1, (int) meterInfo.getProperty ("num", 4));
+            meterPulse = (double) meterInfo.getProperty ("pulse", 1.0);
+            meterCompound = (bool) meterInfo.getProperty ("compound", false);
+            masterChanged = true;
+        });
     }
 
     // Starts playing from `beat` after `delaySamples` (a count-in plays clicks during the wait).
     void play (double beat, int64 delaySamples, bool countIn)
     {
-        const ScopedLock l (lock);
-        position = beat;
-        anchor = beat;
-        resumeClips = true;   // clips already under way at `beat` pick up partway
-        waitSamples = std::max<int64> (0, delaySamples);
-        countInClicks = countIn;
-        countInSamples = 0;
-        playing = true;
+        post ([this, beat, delaySamples, countIn]
+        {
+            position = beat;
+            anchor = beat;
+            startPending = true;
+            resumeClips = true;   // clips already under way at `beat` pick up partway
+            waitSamples = std::max<int64> (0, delaySamples);
+            countInClicks = countIn;
+            countInSamples = 0;
+            playing = true;
+        });
     }
 
     void stop()
     {
-        const ScopedLock l (lock);
-        playing = false;
-        for (auto& t : tracks) { if (t->instrument) t->instrument->allNotesOff (0); t->stopClips (0); }
+        post ([this]
+        {
+            playing = false;
+            for (auto& t : tracks) { if (t->instrument) t->instrument->allNotesOff (0); t->stopClips (0); }
+        });
     }
 
     void seek (double beat)
     {
-        const ScopedLock l (lock);
-        position = beat;
-        anchor = beat;
-        for (auto& t : tracks) t->stopClips (0);
-        resumeClips = true;
+        post ([this, beat]
+        {
+            position = beat;
+            anchor = beat;
+            for (auto& t : tracks) t->stopClips (0);
+            resumeClips = true;
+        });
     }
 
     // Notes played live (keyboard, MIDI), from any thread; applied at the start of the next block.
@@ -1246,22 +1259,30 @@ public:
 
     double currentBeat() const { return beatNow.load(); }
     bool isPlaying() const { return playingNow.load(); }
+    // The device frame where the song started rolling (after any count-in), and the beat it started at.
+    double startedFrame() const { return startFrame.load(); }
+    double startedBeat() const { return startBeat.load(); }
 
     // Track meters since the last call (post-fader peaks), plus the master's.
     var takeMeters()
     {
         auto* o = new DynamicObject();
-        const ScopedLock l (lock);
-        for (auto& t : tracks) { o->setProperty (t->id, t->peak); t->peak = 0; }
+        if (auto list = std::atomic_load (&published))
+            for (auto& t : *list) o->setProperty (t->id, t->peak.exchange (0));
         o->setProperty ("master", masterPeak.exchange (0));
         return var (o);
     }
 
-    // Renders a block, adding to L/R.
-    void process (float* L, float* R, int n)
+    // Renders a block, adding to L/R. `frame` is the device frame the block starts at.
+    void process (float* L, float* R, int n, int64 frame = 0)
     {
-        const ScopedTryLock l (lock);
-        if (! l.isLocked()) return;
+        runCommands();
+        if (playing && startPending)
+        {
+            // The song starts rolling once the count-in has passed.
+            const auto wait = std::min<int64> (waitSamples, n);
+            if (wait < n) { startFrame = (double) (frame + wait); startBeat = position; startPending = false; }
+        }
         if (masterChanged) { master.setVolumeDb (masterDb); master.fx.configure (masterFx); masterChanged = false; }
         const bool running = playing || offlineRender;
         master.fx.setRunning (running);
@@ -1295,12 +1316,14 @@ public:
     // Offline: renders [start, end) plus a tail, at the engine's rate.
     AudioBuffer<float> render (double start, double end, double tail)
     {
+        runCommands();   // the song set just before (no audio thread here)
         const int total = (int) std::ceil ((tempo.secBetween (start, end) + tail) * rate);
         const int stopAt = (int) std::llround (tempo.secBetween (start, end) * rate);
         AudioBuffer<float> out (2, total);
         out.clear();
         offlineRender = true;   // an export keeps the effects' noise running to the end, as the app's does
         play (start, 0, false);
+        runCommands();
         for (int pos = 0; pos < total; pos += block)
         {
             const int n = jmin (block, total - pos);
@@ -1310,7 +1333,7 @@ public:
                 // own lengths, as when the app's transport stops an export.
                 const int first = jmax (0, stopAt - pos);
                 if (first > 0) process (out.getWritePointer (0, pos), out.getWritePointer (1, pos), first);
-                { const ScopedLock l (lock); playing = false; }
+                playing = false;
                 if (n - first > 0) process (out.getWritePointer (0, pos + first), out.getWritePointer (1, pos + first), n - first);
                 continue;
             }
@@ -1323,12 +1346,30 @@ public:
 
 private:
     SamplePool& pool;
-    CriticalSection lock, liveLock;
+    CriticalSection commandLock, liveLock;
+    std::vector<std::function<void()>> commands;
+    std::map<String, std::shared_ptr<TrackPlayer>> known;    // message thread: the tracks as last set
+    std::map<String, String> keys;                           // message thread: each track's instrument
+    std::shared_ptr<const std::vector<std::shared_ptr<TrackPlayer>>> published;   // for the meters
+
+    // Changes from other threads are queued and applied by the audio thread between blocks, so it
+    // never waits on a lock (and never skips a block).
+    void post (std::function<void()> fn) { const ScopedLock l (commandLock); commands.push_back (std::move (fn)); }
+
+    void runCommands()
+    {
+        std::vector<std::function<void()>> run;
+        {
+            const ScopedTryLock l (commandLock);
+            if (! l.isLocked() || commands.empty()) return;
+            run.swap (commands);
+        }
+        for (auto& fn : run) fn();
+    }
     double rate = 48000;
     int block = 512;
     TempoMap tempo;
     std::vector<std::shared_ptr<TrackPlayer>> tracks;
-    std::vector<std::unique_ptr<Instrument>> trash;
     SendEffects sends;
     MasterBus master;
     Click click;
@@ -1344,15 +1385,14 @@ private:
     var masterFx;
     bool offlineRender = false;
     int64 waitSamples = 0, countInSamples = 0;
-    std::atomic<double> beatNow { 0 };
+    std::atomic<double> beatNow { 0 }, startFrame { -1 }, startBeat { 0 };
+    bool startPending = false;
     std::atomic<bool> playingNow { false };
     std::atomic<float> masterPeak { 0 };
     SongPosition songPosition;
 
     struct LiveNote { String track; int midi; float velocity; bool on; };
     std::vector<LiveNote> live;
-
-    void trashOld() { if (trash.size() > 8) trash.clear(); }
 
     void applyLiveNotes()
     {

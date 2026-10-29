@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { heardContextTime, placeTake } from '../src/engine/take-placement.js';
+import { heardContextTime, placeTake, placeNativeTake } from '../src/engine/take-placement.js';
 
 const device = { rate: 48000, buffer: 128, inputLatency: 96 };
 
@@ -32,4 +32,20 @@ test('placement follows tempo changes', () => {
   const project = { bpm: 120, tempoChanges: [{ beat: 8, bpm: 60 }] };
   // From beat 4 at 120 bpm, 2 s reaches beat 8; 1 s more at 60 bpm is beat 9.
   assert.ok(Math.abs(placeTake(6, { time: 3, beat: 4 }, project, 48000).startBeat - 9) < 1e-9);
+});
+
+test('native placement uses the device clock and the round-trip latency', () => {
+  const project = { bpm: 120, tempoChanges: [] };
+  const device = { rate: 48000, inputLatency: 100, outputLatency: 140 };
+  // The song started rolling at frame 96000 at beat 8. A take whose first frame is 96240 began
+  // exactly as the song started (240 frames of latency).
+  const a = placeNativeTake({ first: 96240 }, device, { frame: 96000, beat: 8 }, project);
+  assert.equal(a.skip, 0);
+  assert.ok(Math.abs(a.startBeat - 8) < 1e-9);
+  // Recording from a count-in: the first 48000 frames come before the song starts.
+  const b = placeNativeTake({ first: 48240 }, device, { frame: 96000, beat: 8 }, project);
+  assert.equal(b.skip, 48000);
+  assert.ok(Math.abs(b.startBeat - 8) < 1e-9);
+  // Half a second after the start is one beat later at 120 bpm.
+  assert.ok(Math.abs(placeNativeTake({ first: 120240 }, device, { frame: 96000, beat: 8 }, project).startBeat - 9) < 1e-9);
 });

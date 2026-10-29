@@ -14,7 +14,7 @@ import { bpmAt } from '../music/tempo.js';
 const sampleIds = new WeakMap();   // AudioBuffer -> id
 const uploaded = new Set();        // ids the running helper has
 let nextId = 1;
-bridge.addEventListener('crash', () => uploaded.clear());
+let watching = false;   // (registered on first use: this module can load before plugins.js finishes)
 
 function sampleId(buffer) {
   if (!sampleIds.has(buffer)) sampleIds.set(buffer, `s${nextId++}`);
@@ -23,6 +23,7 @@ function sampleId(buffer) {
 
 // Sends a decoded buffer to the helper once ('S' frame: id, rate, channels, frames, planar float32).
 function upload(buffer) {
+  if (!watching) { watching = true; bridge.addEventListener('crash', () => uploaded.clear()); }
   const id = sampleId(buffer);
   if (uploaded.has(id)) return id;
   const idBytes = new TextEncoder().encode(id);
@@ -128,7 +129,22 @@ export function songForNative(project, instruments, { metronome = false, bufferF
 }
 
 // Renders a range of the song offline in the helper (for export and checks): an AudioBuffer.
-export async function renderNative(song, { start, end, tail = 2.5, sampleRate }) {
+// binary: stream the audio back in chunks (for long exports) instead of one base64 reply.
+export async function renderNative(song, { start, end, tail = 2.5, sampleRate, binary = false }) {
+  if (binary) {
+    const chunks = [];
+    const req = bridge.peekRequest();
+    const onChunk = e => { if (e.detail.req === req) chunks.push(e.detail); };
+    bridge.addEventListener('renderChunk', onChunk);
+    try {
+      const res = await bridge.call('song:render', { song, start, end, tail, rate: sampleRate, binary: true });
+      const out = new AudioBuffer({ length: Math.max(1, res.frames), sampleRate, numberOfChannels: 2 });
+      for (const c of chunks) { out.copyToChannel(c.l, 0, c.first); out.copyToChannel(c.r, 1, c.first); }
+      return out;
+    } finally {
+      bridge.removeEventListener('renderChunk', onChunk);
+    }
+  }
   const res = await bridge.call('song:render', { song, start, end, tail, rate: sampleRate });
   const bin = atob(res.output);
   const bytes = new Uint8Array(bin.length);

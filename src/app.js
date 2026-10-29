@@ -110,6 +110,16 @@ class App {
     }
     on = on && this.nativeSupported;
     this.engine.useNative(on ? this.nativeAudioSettings() : null);
+    // Songs play through the native engine too, unless that's turned off in Settings.
+    const playback = on && this.settings.nativePlayback !== false;
+    if (playback !== this.engine.nativePlayback) {
+      try {
+        await this.engine.useNativePlayback(playback);
+      } catch (err) {
+        toast(`The low-latency engine couldn't open the audio device (${err.message}); using standard playback.`, 6000);
+        this.engine.useNative(null);
+      }
+    }
   }
 
   // Applies changed native settings, reopening the device if it's in use.
@@ -117,7 +127,8 @@ class App {
     await window.host?.setSettings(this.settings);
     const wasOpen = !!this.engine.native.device;
     const track = this.monitorTrack && store.track(this.monitorTrack);
-    if (wasOpen) this.engine.closeInput(true);
+    if (this.engine.nativePlayback) await this.engine.useNativePlayback(false);
+    if (wasOpen) { this.engine.closeInput(true); await this.engine.native.close(); }
     await this.configureNativeAudio();
     if (track) {
       this.monitorTrack = null;
@@ -265,9 +276,8 @@ class App {
     if (store.project.tempoChanges?.length) this.showTempo();
     this.arrange.updateMeters();
     this.drawInputMeter();
-    const m = this.engine.masterMeter.getValue();
     const ctx = canvas2d($('#master-meter'), 80, 8);
-    const lvl = Math.max(0, Math.min(1, ((typeof m === 'number' ? m : m[0]) + 48) / 48));
+    const lvl = Math.max(0, Math.min(1, (this.engine.masterDb() + 48) / 48));
     ctx.fillStyle = palette().well;
     ctx.fillRect(0, 0, 80, 8);
     ctx.fillStyle = lvl > 0.95 ? '#e5534b' : lvl > 0.8 ? '#e0c040' : '#3fbf5f';
@@ -756,6 +766,9 @@ class App {
     const enabled = h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: s.nativeAudio !== false, onchange: e => { s.nativeAudio = e.target.checked; this.applyNativeAudio(); } }),
       'Monitor and record guitars through the low-latency engine');
+    const playback = h('label', { class: 'check' },
+      h('input', { type: 'checkbox', checked: s.nativePlayback !== false, disabled: s.nativeAudio === false, onchange: e => { s.nativePlayback = e.target.checked; this.applyNativeAudio(); } }),
+      'Play songs through it too (low-latency instruments and plugins)');
     const type = h('select', { class: 'wide-select', onchange: e => { n.type = e.target.value; n.input = ''; n.output = ''; fill(); this.applyNativeAudio(); } });
     const input = h('select', { class: 'wide-select', onchange: e => { n.input = e.target.value; this.applyNativeAudio(); } });
     const output = h('select', { class: 'wide-select', onchange: e => { n.output = e.target.value; this.applyNativeAudio(); } });
@@ -767,6 +780,7 @@ class App {
       readout.replaceChildren(d
         ? h('div', {}, h('span', {}, `${d.type} · ${d.buffer} samples at ${(d.rate / 1000).toFixed(1)} kHz`), h('strong', {}, `${this.engine.native.monitorLatencyMs()} ms monitoring`))
         : h('div', {}, h('span', {}, 'Opens when you monitor or record an audio track'), h('strong', {}, '—')));
+      if (d && this.engine.nativePlayback) readout.append(h('div', {}, h('span', {}, 'Playing keyboards and plugins'), h('strong', {}, `${Math.round((d.buffer + (d.outputLatency || 0)) / d.rate * 1000 + 1)} ms`)));
     };
     let types = [];
     const fill = () => {
@@ -778,7 +792,7 @@ class App {
     };
     this.engine.native.devices().then(r => { types = r.types.filter(t => t.type !== 'Test' || n.type === 'Test'); fill(); }).catch(() => {});
     showLatency();
-    return section('Low-latency engine', enabled,
+    return section('Low-latency engine', enabled, playback,
       h('div', { class: 'settings-desc' }, 'Plays your guitar\'s amp and effects through a native audio engine, so what you hear while monitoring is only a few milliseconds behind what you play. Use headphones.'),
       h('label', { class: 'field' }, h('span', {}, 'Audio system'), type),
       h('label', { class: 'field' }, h('span', {}, 'Input'), input),
@@ -1348,10 +1362,15 @@ class App {
       bar.style.width = '15%';
       await this.engine.prepareAudio(p);
       await this.engine.prepareIRs(p);
-      status.textContent = 'Rendering plugins…';
-      const pluginAudio = await this.engine.renderPlugins(p, { ...range, sampleRate });
-      status.textContent = 'Mixing your song…';
-      const buffer = await renderProject(p, this.engine.audioPool, { ...range, sampleRate, bufferFor: this.engine.bufferFor, pluginAudio });
+      let buffer;
+      if (this.engine.nativePlayback) {
+        buffer = await this.engine.renderNativeExport(p, { ...range, sampleRate });
+      } else {
+        status.textContent = 'Rendering plugins…';
+        const pluginAudio = await this.engine.renderPlugins(p, { ...range, sampleRate });
+        status.textContent = 'Mixing your song…';
+        buffer = await renderProject(p, this.engine.audioPool, { ...range, sampleRate, bufferFor: this.engine.bufferFor, pluginAudio });
+      }
       status.textContent = `Encoding ${fmt.ext.toUpperCase()}…`;
       const bytes = await encodeAudio(buffer, formatId, f => { bar.style.width = `${15 + f * 85}%`; });
       close();
@@ -1436,6 +1455,7 @@ class App {
   toggleMetronome() {
     this.engine.metronome = !this.engine.metronome;
     $('#btn-metronome').classList.toggle('on', this.engine.metronome);
+    this.engine.scheduleNativeSong();
   }
 
   toggleLibrary() {

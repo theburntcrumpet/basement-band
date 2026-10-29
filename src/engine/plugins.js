@@ -75,6 +75,11 @@ class Bridge extends EventTarget {
     window.host.plugins.onMessage(m => this.onMessage(m));
   }
 
+  // The request id the next call() will use (to match streamed replies).
+  peekRequest() {
+    return this.req + 1;
+  }
+
   call(cmd, props = {}) {
     this.start();
     const req = ++this.req;
@@ -129,6 +134,11 @@ class Bridge extends EventTarget {
       } else if (j.event) {
         this.dispatchEvent(new CustomEvent(j.event, { detail: j }));
       }
+    } else if (m.type === 'E') {
+      // A chunk of an offline song render: u32 request, u32 first frame, u32 frames, planar L then R.
+      const ab = m.data instanceof ArrayBuffer ? m.data : m.data.buffer.slice(m.data.byteOffset, m.data.byteOffset + m.data.byteLength);
+      const [req, first, frames] = new Uint32Array(ab, 0, 3);
+      this.dispatchEvent(new CustomEvent('renderChunk', { detail: { req, first, l: new Float32Array(ab, 12, frames), r: new Float32Array(ab, 12 + frames * 4, frames) } }));
     } else if (m.type === 'I') {
       // Recorded input from the live-audio engine: i64 first frame, f64 clock time, f64 its frame, f32 samples.
       const ab = m.data instanceof ArrayBuffer ? m.data : m.data.buffer.slice(m.data.byteOffset, m.data.byteOffset + m.data.byteLength);

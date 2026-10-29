@@ -442,6 +442,68 @@ module.exports = async function native(win, app) {
     }
     return worst <= 1.5 ? 'ok loudness per 50 ms, each side: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('the app plays songs through the native engine (virtual interface)', `
+    app.settings.native = { type: 'Test', buffer: 128 };
+    app.settings.nativeAudio = true;
+    app.settings.nativePlayback = true;
+    await app.configureNativeAudio();
+    if (!app.engine.nativePlayback) return 'native playback not on';
+    store.dirty = false;
+    await app.newSong();
+    app.countIn = false;
+    store.update(p => { p.bpm = 120; });
+    const drums = app.addTrack('drums', 'kit-rock', 'Drums');
+    const keys = app.addTrack('instrument', 'grand-piano', 'Keys');
+    store.update(() => {
+      drums.regions.push({ id: 'd', start: 0, length: 4, loopLength: 4, notes: [0, 1, 2, 3].map(t => ({ t, d: 0.25, n: 36, v: 1 })) });
+      // (The piano plays after the kicks, so it can't blur where each kick starts.)
+      keys.regions.push({ id: 'k', start: 4, length: 4, loopLength: 4, notes: [{ t: 0, d: 2, n: 60, v: 0.5 }] });
+      drums.reverb = 0; keys.reverb = 0;
+    });
+    await app.engine.whenLoaded();
+    await new Promise(r => setTimeout(r, 300));
+    const { bridge } = await import('./engine/plugins.js');
+    const decode = s => { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Float32Array(u.buffer); };
+    // Play: kicks every half second must come out exactly 24000 frames apart.
+    app.seek(0);
+    await app.togglePlay();
+    let meter = -Infinity, positions = [];
+    for (let i = 0; i < 22; i++) { await new Promise(r => setTimeout(r, 100)); meter = Math.max(meter, app.engine.meterDb(drums.id)); positions.push(app.engine.position()); }
+    const cap = await bridge.call('test:capture', { frames: 96000 });
+    await app.stop();
+    const x = decode(cap.audio), onsets = [];
+    let quiet = 9999;
+    for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > 0.05 && quiet > 4800) onsets.push(i); quiet = a > 0.05 ? 0 : quiet + 1; }
+    // Kicks one beat apart (the capture also catches the piano coming in at beat 4, and maybe the
+    // tail of a kick at its start).
+    const gaps = onsets.slice(1).map((o, i) => o - onsets[i]).filter(g => Math.abs(g - 24000) < 600);
+    if (gaps.length < 2 || gaps.some(g => Math.abs(g - 24000) > 2)) return 'kick onsets ' + onsets + ' gaps ' + gaps;
+    if (!(meter > -40)) return 'track meter ' + meter;
+    const rising = positions.every((p, i) => i === 0 || p >= positions[i - 1] - 0.01);
+    if (!rising || !(positions[positions.length - 1] > 3)) return 'positions ' + positions.map(p => p.toFixed(2));
+    // A live note: from sending it to hearing it.
+    await new Promise(r => setTimeout(r, 400));
+    const before = await bridge.call('audio:clock');
+    app.engine.noteOn(keys.id, 72, 1);
+    await new Promise(r => setTimeout(r, 300));
+    app.engine.noteOff(keys.id, 72);
+    const cap2 = await bridge.call('test:capture', { frames: 24000 });
+    const y = decode(cap2.audio);
+    const firstLoud = y.findIndex(v => Math.abs(v) > 0.01);
+    const offset = cap2.deviceEnd - cap2.frame;            // device clock vs ours
+    const onsetOurs = cap2.deviceEnd - y.length + firstLoud - offset;
+    const sentAt = before.frame + (before.now - before.frameTime) * 48000;
+    const latencyMs = (onsetOurs - sentAt) / 48;
+    if (firstLoud < 0 || !(latencyMs >= 0 && latencyMs < 15)) return 'live note latency ' + latencyMs + ' ms (onset ' + firstLoud + ')';
+    // Export through the native engine matches the app's own mix.
+    const { renderProject } = await import('./engine/engine.js');
+    const web = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 8, tail: 1, sampleRate: 48000 });
+    const nat = await app.engine.renderNativeExport(store.project, { start: 0, end: 8, tail: 1, sampleRate: 48000 });
+    const rms = b => { let e = 0; const d = b.getChannelData(0); for (let i = 0; i < Math.min(web.length, nat.length); i++) e += d[i] * d[i]; return 10 * Math.log10(e / web.length); };
+    const diff = Math.abs(rms(web) - rms(nat));
+    if (diff > 0.5) return 'export level differs by ' + diff.toFixed(2) + ' dB';
+    return 'ok kicks exactly 24000 frames apart, meters and playhead follow, live note in ' + latencyMs.toFixed(1) + ' ms (128-sample buffer), export matches within ' + diff.toFixed(2) + ' dB';`);
+
   for (const r of results) console.log(r);
   app.quit();
 };
