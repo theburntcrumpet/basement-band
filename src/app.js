@@ -70,11 +70,19 @@ class App {
     const p = store.project;
     this.engine.sync(p);
     if (this.monitorTrack && !store.track(this.monitorTrack)) this.stopMonitoring();
-    if (this.engine.playing) {
+    // Mixer, amp and effect changes apply directly; only re-plan playback when timing could change.
+    const plan = this.playbackPlan(p);
+    if (this.engine.playing && plan !== this.lastPlan) {
       clearTimeout(this.rescheduleTimer);
       this.rescheduleTimer = setTimeout(() => this.engine.reschedule(), 60);
     }
+    this.lastPlan = plan;
     this.refresh();
+  }
+
+  // Everything that affects what plays when: notes, regions, automation, tempo, meter, cycle, tracks.
+  playbackPlan(p) {
+    return JSON.stringify([p.bpm, p.timeSig, p.cycle, p.tracks.map(t => [t.id, t.type, t.regions, t.automation])]);
   }
 
   refresh() {

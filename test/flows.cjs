@@ -706,6 +706,54 @@ module.exports = async function flows(win, app) {
     const notes = out.tracks.flatMap(t => t.notes.map(n => n.n + '@' + n.t)).sort().join(' ');
     return out.bpm === 87 && notes === '36@0 42@1 43@0 45@3 55@0 57@3' && out.tracks.find(t => t.drums) ? 'ok ' + kinds : 'export ' + out.bpm + ' ' + notes;`);
 
+  await check('audio keeps playing through mixer changes and edits', `
+    store.dirty = false;
+    await app.newSong();
+    const rate = 44100, secs = 6;
+    const tone = new AudioBuffer({ length: rate * secs, sampleRate: rate, numberOfChannels: 1 });
+    const d = tone.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.sin(2 * Math.PI * 220 * i / rate) * 0.4;
+    app.addAudioBuffer(tone, 'Tone', null, 0);
+    const keys = app.addTrack('instrument', 'chip', 'Keys');
+    const t = store.project.tracks.find(x => x.type === 'audio');
+    await app.engine.whenLoaded();
+    app.seek(0);
+    await app.togglePlay();
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const meter = () => { const m = app.engine.nodes.get(t.id).meter.getValue(); return typeof m === 'number' ? m : Math.max(...m); };
+    const state = () => ({ sources: app.engine.audioSources.size, level: meter() });
+    await wait(400);
+    const before = state();
+    store.update(() => { t.volume = -8; });           // knob-style mixer change
+    await wait(250);
+    store.update(() => { t.reverb = 0.5; t.echo = 0.3; });
+    await wait(400);
+    const afterMixer = state();
+    store.update(() => { keys.regions.push({ id: 'k', start: 0, length: 8, loopLength: 8, notes: [{ t: 6, d: 1, n: 60, v: 0.8 }] }); }); // forces a re-plan
+    await wait(500);
+    const afterEdit = state();
+    await app.stop();
+    const ok = s => s.sources === 1 && s.level > -50;
+    return ok(before) && ok(afterMixer) && ok(afterEdit) ? 'ok one source playing throughout (' + [before, afterMixer, afterEdit].map(s => s.level.toFixed(0) + ' dB').join(', ') + ')' : JSON.stringify({ before, afterMixer, afterEdit });`);
+
+  await check('cycle: starting mid-loop still plays the notes before the start on repeats', `
+    store.dirty = false;
+    await app.newSong();
+    store.update(p => { p.bpm = 240; p.cycle = { on: true, start: 0, end: 4 }; });
+    const t = app.addTrack('instrument', 'chip', 'Loop');
+    store.update(() => { t.regions.push({ id: 'c', start: 0, length: 4, loopLength: 4, notes: [{ t: 0, d: 0.5, n: 60, v: 0.8 }, { t: 1, d: 0.5, n: 62, v: 0.8 }, { t: 3, d: 0.5, n: 67, v: 0.8 }] }); });
+    await app.engine.whenLoaded();
+    const inst = app.engine.nodes.get(t.id).instrument;
+    const heard = [];
+    const orig = inst.play.bind(inst);
+    inst.play = (n, ...rest) => { heard.push(n); return orig(n, ...rest); };
+    app.seek(2);
+    await app.togglePlay();
+    await new Promise(r => setTimeout(r, 2300));   // 1 s per pass: the tail of pass 1, then two full repeats
+    await app.stop();
+    store.update(p => { p.cycle.on = false; });
+    const count = n => heard.filter(x => x === n).length;
+    return count(60) >= 2 && count(62) >= 2 && count(67) >= 2 ? 'ok heard ' + heard.join(',') : 'heard ' + heard.join(',');`);
+
   await check('piano roll follows the selected track and region', `
     store.dirty = false;
     await app.newSong();

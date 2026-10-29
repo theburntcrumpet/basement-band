@@ -215,7 +215,7 @@ function once(fn) {
 
 // Automation: each curve point starts a linear ramp to the next, timed from the transport.
 // Playback starting mid-curve begins with the interpolated value; cycle repeats re-seed at the start.
-function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat }) {
+function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat, inCycleBefore }) {
   for (const p of AUTO_PARAMS) {
     const points = curve(track, p.key);
     if (!points.length) continue;
@@ -227,27 +227,35 @@ function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat
     };
     for (const r of rampsFrom(points, from)) transport.schedule(once(play(r)), ticks(r.at));
     if (cycle) {
-      const r = rampsFrom(points, cycle.start)[0];
-      transport.schedule(once(t => { if (isRepeat()) play(r)(t); }), ticks(cycle.start));
+      // Repeats re-seed at the cycle start, plus any ramps in the loop before `from`.
+      for (const r of rampsFrom(points, cycle.start)) {
+        if (r.at >= from - 1e-9) break;
+        if (r.at === cycle.start || inCycleBefore(r.at)) transport.schedule(once(t => { if (isRepeat()) play(r)(t); }), ticks(r.at));
+      }
     }
   }
 }
 
 // Schedules a whole project onto a transport.
-//   from:      the beat playback starts at; audio already under way there starts partway through
-//   cycle:     the cycle range, if on; audio spanning its start restarts partway on each repeat
-//   isRepeat:  () => true once the transport has wrapped round the cycle at least once
-//   active:    a Set collecting live audio sources, so they can be stopped
-export function scheduleProject(transport, project, nodes, audioPool, { from = 0, cycle = null, isRepeat = () => false, active = null } = {}) {
+//   from:       the beat playback (or a mid-play re-plan) takes over at
+//   restartAt:  where audio already under way at `from` picks up again (defaults to `from`; a little
+//               later when re-planning mid-play, past what the scheduler has already handed off)
+//   cycle:      the cycle range, if on. Everything in the loop before `from` is also scheduled, for
+//               repeats only, so notes there aren't lost on the next pass.
+//   isRepeat:   () => true once the transport has wrapped round the cycle since this schedule
+//   active:     a Set collecting live audio sources, so they can be stopped
+export function scheduleProject(transport, project, nodes, audioPool, { from = 0, restartAt = from, cycle = null, isRepeat = () => false, active = null } = {}) {
   const spb = 60 / project.bpm;
+  const inCycleBefore = t => !!cycle && t >= cycle.start - 1e-9 && t < Math.min(from, cycle.end) - 1e-9;
+  const onRepeat = fn => once(t => { if (isRepeat()) fn(t); });
   for (const track of project.tracks) {
     const node = nodes.get(track.id);
     if (!node) continue;
-    scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat });
+    scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat, inCycleBefore });
     for (const region of track.regions) {
       if (track.type === 'audio') {
         const buffer = audioPool.get(region.audioId);
-        if (!buffer || regionEnd(region) <= from) continue;
+        if (!buffer) continue;
         // One-shot sources at exact transport times (Tone's synced Player could start a clip twice).
         const ctx = node.input.context;
         for (const seg of audioSegments(region)) {
@@ -266,16 +274,18 @@ export function scheduleProject(transport, project, nodes, audioPool, { from = 0
           };
           const end = seg.at + seg.length;
           if (seg.at >= from - 1e-9) transport.schedule(once(t => play(t, 0)), ticks(seg.at));
-          else if (end > from) transport.schedule(once(t => play(t, (from - seg.at) * spb)), ticks(from));
+          else if (end > restartAt) transport.schedule(once(t => play(t, (restartAt - seg.at) * spb)), ticks(restartAt));
+          if (inCycleBefore(seg.at)) transport.schedule(onRepeat(t => play(t, 0)), ticks(seg.at));
           if (cycle && seg.at < cycle.start - 1e-9 && end > cycle.start) {
-            transport.schedule(once(t => { if (isRepeat()) play(t, (cycle.start - seg.at) * spb); }), ticks(cycle.start));
+            transport.schedule(onRepeat(t => play(t, (cycle.start - seg.at) * spb)), ticks(cycle.start));
           }
         }
         continue;
       }
       for (const n of expandRegion(region)) {
-        if (n.t < from - 1e-6) continue;
-        transport.schedule(once(time => node.instrument?.play(n.n, n.d * spb, time, n.v)), ticks(n.t));
+        const note = time => node.instrument?.play(n.n, n.d * spb, time, n.v);
+        if (n.t >= from - 1e-6) transport.schedule(once(note), ticks(n.t));
+        else if (inCycleBefore(n.t)) transport.schedule(onRepeat(note), ticks(n.t));
       }
     }
   }
@@ -393,11 +403,22 @@ export class Engine extends EventTarget {
   }
 
   // Schedules everything from `from` (the playback start, or the current position for edits while playing).
-  reschedule(from = this.playing ? this.position() + 0.05 : 0) {
+  // Plans playback from `startBeat`, or — when called mid-play after an edit — takes over seamlessly:
+  // notes and automation from the scheduler's horizon (everything before it is already handed to the
+  // audio clock), and playing audio clips from a moment after it, where the old ones stop.
+  reschedule(startBeat) {
+    const live = startBeat == null && this.playing;
+    let from = startBeat ?? 0, restartAt = from, stopAt = Tone.now();
+    if (live) {
+      from = this.transport.getTicksAtTime(Tone.now()) / PPQ;
+      stopAt = Tone.now() + 0.04;
+      restartAt = this.transport.getTicksAtTime(stopAt) / PPQ;
+    }
     this.transport.cancel(0);
-    this.stopAudio(Tone.now());
+    this.stopAudio(stopAt);
     const cycle = this.project.cycle?.on ? this.project.cycle : null;
-    scheduleProject(this.transport, this.project, this.nodes, this.audioPool, { from, cycle, isRepeat: () => this.loopCount > 0, active: this.audioSources });
+    const pass = this.loopCount;
+    scheduleProject(this.transport, this.project, this.nodes, this.audioPool, { from, restartAt, cycle, isRepeat: () => this.loopCount > pass, active: this.audioSources });
     const m = meter(this.project.timeSig);
     this.transport.scheduleRepeat(time => {
       if (!this.metronome) return;
