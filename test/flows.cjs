@@ -52,7 +52,7 @@ module.exports = async function flows(win, app) {
     app.createEmptyRegion(t, 0);
     const r = t.regions[0];
     store.update(() => { r.notes.push({ t: 0, d: 1, n: 60, v: .8 }, { t: 1, d: 1, n: 64, v: .8 }); });
-    app.editor.selected = new Set([0, 1]);
+    app.editor.selected = new Set(r.notes);
     app.editor.nudge(0, 12);
     app.editor.quantize();
     return r.notes[0].n === 72 && r.notes[1].n === 76 ? 'ok' : JSON.stringify(r.notes);`);
@@ -525,6 +525,90 @@ module.exports = async function flows(win, app) {
     const beatsAt = where / before.sampleRate / spb;
     const regs = JSON.stringify(t.regions.map(x => ({ s: x.start, l: x.length, ll: x.loopLength, ph: x.phase, o: x.offset })));
     return diff < 0.02 ? 'ok extend, loop x4 on the bar, snap-to-bar move to ' + moved + ', duplicate at bar 3, split identical (max diff ' + diff.toFixed(4) + ')' : 'split changed audio by ' + diff.toFixed(3) + ' at beat ' + beatsAt.toFixed(3) + ' ' + regs;`);
+
+  await check('piano roll tools: box, pencil, eraser, copy/paste/duplicate, key glow', `
+    store.dirty = false;
+    await app.newSong();
+    const t = app.addTrack('instrument', 'grand-piano', 'Keys');
+    app.createEmptyRegion(t, 0);
+    const r = t.regions[0];
+    store.update(() => { r.notes = [{ t: 0, d: 1, n: 60, v: 0.8 }, { t: 1, d: 1, n: 64, v: 0.8 }, { t: 2, d: 1, n: 67, v: 0.8 }]; });
+    app.openEditor(r.id);
+    const ed = app.editor;
+    await new Promise(res => setTimeout(res, 100));
+    const grid = ed.grid, box = grid.getBoundingClientRect();
+    const at = (beat, midi) => ({ clientX: box.left + beat * ed.ppb + 2, clientY: box.top + ed.rowY(midi) + ed.rowH / 2 });
+    const mouse = (type, target, p) => (target || window).dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, ...p }));
+    const dragFrom = (a, b) => { mouse('mousedown', grid, a); for (let i = 1; i <= 5; i++) mouse('mousemove', null, { clientX: a.clientX + (b.clientX - a.clientX) * i / 5, clientY: a.clientY + (b.clientY - a.clientY) * i / 5 }); mouse('mouseup', null, b); };
+    // Box tool: drag around the first two notes.
+    ed.setTool('box');
+    dragFrom(at(-0.02, 65), at(1.9, 59));
+    if (ed.selected.size !== 2) return 'box selected ' + ed.selected.size;
+    // Key glow: the C4 row of the keyboard is tinted while selected.
+    const kc = ed.keys.getContext('2d'), dpr = window.devicePixelRatio || 1;
+    const px = kc.getImageData(Math.round(50 * dpr), Math.round((ed.rowY(60) + ed.rowH / 2) * dpr), 1, 1).data;
+    if (px[0] === 255 && px[1] === 255 && px[2] === 255 || px[0] === 232 && px[1] === 232) return 'C4 key not highlighted ' + Array.from(px);
+    // Copy, paste at the playhead (beat 4), duplicate.
+    app.bottomMode = 'editor';
+    app.copy(false);
+    app.seek(4);
+    app.paste();
+    if (r.notes.length !== 5) return 'paste -> ' + r.notes.length;
+    const pasted = [...ed.selected].map(n => n.t).sort();
+    if (pasted[0] !== 4 || pasted[1] !== 5) return 'pasted at ' + pasted;
+    if (r.length < 8) return 'region did not grow to fit: ' + r.length;
+    ed.duplicate();
+    const dup = [...ed.selected].map(n => n.t).sort();
+    if (dup[0] !== 6 || r.notes.length !== 7) return 'duplicate at ' + dup + ' count ' + r.notes.length;
+    // Pencil: draw a new note on E5.
+    ed.setTool('pencil');
+    dragFrom(at(3, 76), at(3.9, 76));
+    if (!r.notes.some(n => n.n === 76 && n.t === 3)) return 'pencil did not draw';
+    // Eraser: sweep across C4 and E4 at beats 0-1.
+    ed.setTool('eraser');
+    dragFrom(at(0.1, 60), at(0.2, 60));
+    if (r.notes.some(n => n.n === 60 && n.t === 0)) return 'eraser missed';
+    // Cut and undo.
+    ed.selected = new Set(r.notes.filter(n => n.t >= 4));
+    const before = r.notes.length;
+    app.copy(true);
+    if (r.notes.length !== before - 4) return 'cut left ' + r.notes.length;
+    store.undo();
+    return store.findRegion(r.id).region.notes.length === before ? 'ok box 2, paste @4, duplicate @6, pencil, eraser, cut + undo' : 'undo after cut';`);
+
+  await check('regions: copy and paste at the playhead', `
+    const t = store.project.tracks[0];
+    store.ui.selectedRegions = new Set([t.regions[0].id]);
+    app.bottomMode = null; app.refresh();
+    app.copy(false);
+    app.seek(16);
+    app.paste();
+    const copy = t.regions.find(x => x.start === 16);
+    return copy && copy.notes.length === t.regions[0].notes.length ? 'ok' : JSON.stringify(t.regions.map(x => x.start));`);
+
+  await check('light mode and settings screen', `
+    app.applyTheme('light');
+    await new Promise(r => setTimeout(r, 100));
+    const bg = getComputedStyle(document.body).backgroundColor;
+    if (document.documentElement.dataset.theme !== 'light' || bg === 'rgb(27, 28, 32)') return 'theme ' + document.documentElement.dataset.theme + ' bg ' + bg;
+    app.openSettings();
+    const modes = [...document.querySelectorAll('#modal input[name=audio-mode]')].map(i => i.value).join(',');
+    document.querySelector('#modal input[value=stable]').click();
+    await new Promise(r => setTimeout(r, 100));
+    const note = document.querySelector('#modal .settings-note').textContent;
+    const saved = (await window.host.getSettings()).audioMode;
+    document.querySelector('#modal input[value=balanced]').click();
+    await new Promise(r => setTimeout(r, 100));
+    return modes === 'stable,balanced,low' && note.includes('Restart') && saved === 'stable' ? 'ok bg ' + bg : 'modes ' + modes + ' note ' + note + ' saved ' + saved;`);
+
+  await new Promise(r => setTimeout(r, 200));
+  await shot('15-settings-light');
+  await js(`document.querySelector('#modal .actions .text').click(); const t = store.project.tracks[0]; app.openEditor(t.regions[0].id); app.editor.selected = new Set(t.regions[0].notes.slice(0, 3)); app.editor.setTool('pointer'); app.library.show('sounds');`);
+  await new Promise(r => setTimeout(r, 300));
+  await shot('16-editor-light');
+  await js(`app.applyTheme('dark');`);
+  await new Promise(r => setTimeout(r, 200));
+  await shot('17-editor-dark');
 
   await check('piano roll follows the selected track and region', `
     store.dirty = false;

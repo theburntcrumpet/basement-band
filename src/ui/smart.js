@@ -1,6 +1,6 @@
 // Smart Controls: channel knobs for the selected track, plus Drummer/band controls for generated regions.
 
-import { h, knob, drag, canvas2d } from './dom.js';
+import { h, knob, drag, canvas2d, palette } from './dom.js';
 import { EQ_BANDS, EQ_RANGE, response } from '../engine/eq.js';
 import { EFFECTS, defaultFx } from '../engine/effects.js';
 import { AMP_MODELS, AMP_KNOBS, defaultAmp } from '../engine/amp.js';
@@ -102,8 +102,9 @@ export class SmartControls {
       h('div', { class: 'monitor-row' },
         h('button', { class: 'text' + (monitoring ? ' accent' : ''), onclick: () => app.toggleMonitor(track) }, monitoring ? '🎧 Monitoring' : '🎧 Monitor'),
         h('canvas', { id: 'input-meter', width: 120, height: 10, title: 'Input level — keep the peaks out of the red' })),
-      h('label', { class: 'check', style: { marginTop: '8px' }, title: 'Uses the smallest audio buffers (takes effect after a restart) and, on Linux with PipeWire, asks for 128-frame blocks while monitoring. Can crackle on slower computers.' },
-        h('input', { type: 'checkbox', checked: !!app.settings.lowLatency, onchange: e => app.setLowLatency(e.target.checked) }), 'Low-latency mode'),
+      h('div', { class: 'monitor-row' },
+        h('span', { class: 'settings-desc' }, `Audio mode: ${{ low: 'Low latency', balanced: 'Balanced', stable: 'Stable' }[app.bootAudioMode] || 'Balanced'}`),
+        h('button', { class: 'text small-text', onclick: () => app.openSettings() }, 'Change…')),
       h('div', { class: 'lib-note', style: { padding: '6px 0 0' } },
         monitoring && info.open ? `${info.label || 'Input'} · about ${info.monitorLatencyMs} ms monitoring latency` : 'Use headphones while monitoring. Recordings are kept clean, so you can change the amp later.'));
   }
@@ -213,29 +214,30 @@ const EQ_FREQS = Array.from({ length: 120 }, (_, i) => 20 * Math.pow(1000, i / 1
 
 function drawEq(canvas, track) {
   const w = 200, ht = 86;
+  const c = palette();
   const ctx = canvas2d(canvas, w, ht);
   const x = f => (Math.log10(f / 20) / 3) * w;
   const y = db => ht / 2 - (db / (EQ_RANGE + 3)) * (ht / 2);
-  ctx.fillStyle = '#1a1c21';
+  ctx.fillStyle = c.cvEqBg;
   ctx.fillRect(0, 0, w, ht);
-  ctx.strokeStyle = '#2f323a';
+  ctx.strokeStyle = c.cvEqGrid;
   ctx.lineWidth = 1;
   for (const f of [100, 1000, 10000]) { ctx.beginPath(); ctx.moveTo(x(f) + 0.5, 0); ctx.lineTo(x(f) + 0.5, ht); ctx.stroke(); }
   for (const db of [-12, -6, 6, 12]) { ctx.beginPath(); ctx.moveTo(0, y(db) + 0.5); ctx.lineTo(w, y(db) + 0.5); ctx.stroke(); }
-  ctx.strokeStyle = '#4a4e58';
+  ctx.strokeStyle = c.cvEqZero;
   ctx.beginPath(); ctx.moveTo(0, y(0) + 0.5); ctx.lineTo(w, y(0) + 0.5); ctx.stroke();
-  ctx.fillStyle = '#6c707c';
+  ctx.fillStyle = c.cvEqText;
   ctx.font = '9px system-ui, sans-serif';
   [[100, '100'], [1000, '1k'], [10000, '10k']].forEach(([f, l]) => ctx.fillText(l, x(f) + 3, ht - 4));
   const gains = response(track, EQ_FREQS);
   ctx.beginPath();
   gains.forEach((g, i) => (i ? ctx.lineTo(x(EQ_FREQS[i]), y(g)) : ctx.moveTo(x(EQ_FREQS[i]), y(g))));
   ctx.lineTo(w, y(0)); ctx.lineTo(0, y(0)); ctx.closePath();
-  ctx.fillStyle = '#f0a63a22';
+  ctx.fillStyle = c.cvHover;
   ctx.fill();
   ctx.beginPath();
   gains.forEach((g, i) => (i ? ctx.lineTo(x(EQ_FREQS[i]), y(g)) : ctx.moveTo(x(EQ_FREQS[i]), y(g))));
-  ctx.strokeStyle = '#f0a63a';
+  ctx.strokeStyle = c.accent;
   ctx.lineWidth = 2;
   ctx.stroke();
 }

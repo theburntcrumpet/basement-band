@@ -128,3 +128,17 @@ export function canvas2d(canvas, w, h) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return ctx;
 }
+
+// Theme colours for canvas drawing, read from the CSS variables of the active theme.
+let paletteCache = null, paletteTheme = null;
+export function palette() {
+  const theme = document.documentElement.dataset.theme || 'dark';
+  if (paletteCache && paletteTheme === theme) return paletteCache;
+  const css = getComputedStyle(document.documentElement);
+  const v = name => css.getPropertyValue(name).trim();
+  // e.g. palette().cvRowKey reads --cv-row-key (cached until the theme changes).
+  const resolved = {};
+  paletteCache = new Proxy(resolved, { get: (o, key) => (key in o ? o[key] : (o[key] = v('--' + String(key).replace(/[A-Z]/g, c => '-' + c.toLowerCase())))) });
+  paletteTheme = theme;
+  return paletteCache;
+}

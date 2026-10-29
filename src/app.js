@@ -12,10 +12,10 @@ import { STYLES, partInstrument } from './music/band.js';
 import { KEY_NAMES } from './music/theory.js';
 import { TIME_SIGNATURES, meter, parseTimeSig, barBeat } from './music/meter.js';
 import { Arrange, setupBackgroundDrop } from './ui/arrange.js';
-import { Editor } from './ui/editor.js';
+import { Editor, TOOLS } from './ui/editor.js';
 import { SmartControls } from './ui/smart.js';
 import { Library, LOOPS } from './ui/library.js';
-import { $, h, toast, modal, confirmDialog, contextMenu, canvas2d } from './ui/dom.js';
+import { $, h, toast, modal, confirmDialog, contextMenu, canvas2d, palette, knob } from './ui/dom.js';
 
 const Tone = window.Tone;
 const TYPING_KEYS = ['a', 'w', 's', 'e', 'd', 'f', 't', 'g', 'y', 'h', 'u', 'j', 'k', 'o', 'l', 'p', ';', "'"];
@@ -31,7 +31,10 @@ class App {
   }
 
   async init() {
-    await this.engine.init();
+    this.settings = (await window.host?.getSettings()) || {};
+    this.applyTheme(this.settings.theme || 'system');
+    this.bootAudioMode = (await window.host?.bootAudioMode()) || 'balanced';
+    await this.engine.init(this.bootAudioMode);
     this.arrange = new Arrange(this);
     this.editor = new Editor(this, $('#bottom-body'), $('#bottom-tools'));
     this.smart = new SmartControls(this, $('#bottom-body'), $('#bottom-tools'));
@@ -43,7 +46,6 @@ class App {
     store.addEventListener('change', () => this.onChange());
     store.addEventListener('load', () => { this.editor.open(null); this.library.render(); });
 
-    this.settings = (await window.host?.getSettings()) || {};
     setLibrary(this.settings.userInstruments);
     this.countIn = this.settings.countIn ?? true;
     this.wireToolbar();
@@ -168,7 +170,8 @@ class App {
     const m = this.engine.masterMeter.getValue();
     const ctx = canvas2d($('#master-meter'), 80, 8);
     const lvl = Math.max(0, Math.min(1, ((typeof m === 'number' ? m : m[0]) + 48) / 48));
-    ctx.clearRect(0, 0, 80, 8);
+    ctx.fillStyle = palette().well;
+    ctx.fillRect(0, 0, 80, 8);
     ctx.fillStyle = lvl > 0.95 ? '#e5534b' : lvl > 0.8 ? '#e0c040' : '#3fbf5f';
     ctx.fillRect(0, 0, 80 * lvl, 8);
     requestAnimationFrame(() => this.tick());
@@ -293,7 +296,7 @@ class App {
     try {
       await this.engine.resume();
       await this.engine.openInput(this.settings.inputDevice);
-      if (this.settings.lowLatency) await window.host?.setLowLatency(true);
+      if (this.bootAudioMode === 'low') await window.host?.setLowLatency(true);
       this.engine.setMonitor(track.id, track.input?.channel || 'left');
       this.monitorTrack = track.id;
       // Re-measure once the audio system has settled on its (possibly smaller) buffers.
@@ -314,25 +317,25 @@ class App {
     const db = this.engine.inputLevel(track?.input?.channel || 'left');
     const ctx = canvas2d(canvas, 120, 10);
     const lvl = Math.max(0, Math.min(1, (db + 60) / 60));
-    ctx.fillStyle = '#111';
+    ctx.fillStyle = palette().well;
     ctx.fillRect(0, 0, 120, 10);
     ctx.fillStyle = lvl > 0.95 ? '#e5534b' : lvl > 0.8 ? '#e0c040' : '#3fbf5f';
     ctx.fillRect(0, 0, 120 * lvl, 10);
   }
 
-  async setLowLatency(on) {
-    this.settings.lowLatency = on;
+  audioMode() {
+    return this.settings.audioMode || (this.settings.lowLatency ? 'low' : 'balanced');
+  }
+
+  async setAudioMode(mode) {
+    this.settings.audioMode = mode;
+    delete this.settings.lowLatency;
     await window.host?.setSettings(this.settings);
-    const active = await window.host?.bootLowLatency();
-    if (!on && this.monitorTrack) await window.host?.setLowLatency(false);
-    if (on && this.monitorTrack) await window.host?.setLowLatency(true);
-    toast(on === active ? 'Low-latency mode ' + (on ? 'on' : 'off')
-      : 'Restart Basement Band to finish switching low-latency mode ' + (on ? 'on' : 'off'), 5000);
     this.refresh();
   }
 
   stopMonitoring() {
-    if (this.settings.lowLatency) window.host?.setLowLatency(false);
+    if (this.bootAudioMode === 'low') window.host?.setLowLatency(false);
     this.monitorTrack = null;
     this.engine.setMonitor(null);
     this.engine.closeInput();
@@ -481,6 +484,123 @@ class App {
         fresh.add(copy.id);
       }
     });
+    store.ui.selectedRegions = fresh;
+    this.refresh();
+  }
+
+  // ------------------------------------------------------------ appearance & settings
+
+  // theme: 'system' | 'light' | 'dark'. Canvases redraw with the new colours.
+  applyTheme(theme) {
+    const media = window.matchMedia('(prefers-color-scheme: light)');
+    const resolve = () => (theme === 'system' ? (media.matches ? 'light' : 'dark') : theme);
+    document.documentElement.dataset.theme = resolve();
+    media.onchange = theme === 'system' ? () => { document.documentElement.dataset.theme = resolve(); this.arrange && this.refresh(); } : null;
+    window.host?.setTheme(theme);
+    if (this.arrange) this.refresh();
+  }
+
+  async openSettings() {
+    const s = this.settings;
+    const save = () => window.host?.setSettings(s);
+    const MODES = [
+      ['stable', 'Stable', 'Bigger audio buffers. Best for slower computers or if playback crackles or stutters. Adds latency when playing live.'],
+      ['balanced', 'Balanced', 'The default: smooth playback with moderate latency.'],
+      ['low', 'Low latency', 'Smallest buffers for playing an instrument live (and, on Linux, smaller PipeWire blocks while monitoring). Can crackle on modest hardware.'],
+    ];
+    const restartNote = h('div', { class: 'settings-note' });
+    const updateRestart = () => {
+      const pending = this.audioMode() !== this.bootAudioMode;
+      restartNote.replaceChildren(...(pending ? [
+        h('span', {}, 'Restart Basement Band to switch audio mode. Save your song first.'),
+        h('button', { class: 'text accent', onclick: async () => { if (await this.confirmDiscard()) window.host?.relaunch(); } }, 'Restart now'),
+      ] : [h('span', {}, `Running in ${MODES.find(m => m[0] === this.bootAudioMode)?.[1] || 'Balanced'} mode.`)]));
+    };
+    const modeList = h('div', { class: 'mode-list' }, MODES.map(([id, label, desc]) => h('label', { class: 'mode-option' },
+      h('input', { type: 'radio', name: 'audio-mode', value: id, checked: this.audioMode() === id, onchange: async () => { await this.setAudioMode(id); updateRestart(); } }),
+      h('div', {}, h('strong', {}, label), h('div', { class: 'settings-desc' }, desc)))));
+    updateRestart();
+
+    const device = h('select', { class: 'wide-select', onchange: e => this.setInputDevice(e.target.value) }, h('option', { value: '' }, 'Default input'));
+    navigator.mediaDevices?.enumerateDevices().then(list => {
+      for (const d of list.filter(x => x.kind === 'audioinput' && x.deviceId !== 'default')) device.append(h('option', { value: d.deviceId, selected: d.deviceId === s.inputDevice }, d.label || 'Audio input'));
+    });
+    const offset = h('input', {
+      type: 'number', min: -200, max: 200, step: 1, value: s.latencyMs || 0, class: 'num-input',
+      onkeydown: e => e.stopPropagation(),
+      onchange: e => { s.latencyMs = Math.max(-200, Math.min(200, Number(e.target.value) || 0)); save(); },
+    });
+    const theme = h('select', { class: 'wide-select', onchange: e => { s.theme = e.target.value; save(); this.applyTheme(s.theme); } },
+      [['system', 'Match system'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => h('option', { value: v, selected: (s.theme || 'system') === v }, l)));
+    const clickVol = knob({
+      label: 'Metronome', value: s.metronomeVolume ?? -10, min: -40, max: 0, center: -10, format: v => v.toFixed(0) + ' dB',
+      onInput: v => { this.engine.click.volume.value = v; s.metronomeVolume = v; },
+      onCommit: () => save(),
+    });
+    const section = (title, ...body) => h('section', { class: 'settings-section' }, h('h3', {}, title), ...body);
+    let close;
+    close = modal(h('div', { class: 'settings' },
+      h('h2', {}, 'Settings'),
+      section('Audio performance', modeList, restartNote),
+      section('Recording',
+        h('label', { class: 'field' }, h('span', {}, 'Input device'), device),
+        h('label', { class: 'field inline' }, h('span', {}, 'Recording offset (ms)'), offset,
+          h('span', { class: 'settings-desc' }, 'Nudges new recordings later (+) or earlier (−) if they land slightly off the beat.')),
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: this.countIn, onchange: e => { this.countIn = e.target.checked; s.countIn = this.countIn; $('#btn-countin').classList.toggle('on', this.countIn); save(); } }), 'Count in one bar before recording'),
+        clickVol),
+      section('Appearance', h('label', { class: 'field' }, h('span', {}, 'Theme'), theme)),
+      section('About',
+        h('div', { class: 'settings-desc' }, 'Basement Band — free and open source (MIT). Sounds are CC0/CC-BY/GPL; see the credits.'),
+        h('div', { class: 'row', style: { gap: '8px', marginTop: '8px' } },
+          h('button', { class: 'text', onclick: () => window.host?.openCredits() }, 'Sound credits'))),
+      h('div', { class: 'actions' }, h('button', { class: 'text accent', onclick: () => close() }, 'Done'))));
+  }
+
+  // ------------------------------------------------------------ clipboard (notes in the editor, or regions)
+
+  copy(cut) {
+    if (this.bottomMode === 'editor' && this.editor.hasSelection()) {
+      this.clipboard = this.editor.copySelection();
+      const n = this.clipboard.notes.length;
+      if (cut) this.editor.deleteSelected();
+      toast(`${cut ? 'Cut' : 'Copied'} ${n} note${n === 1 ? '' : 's'}`);
+      return;
+    }
+    const list = this.selectedRegions();
+    if (!list.length) return toast('Select notes or regions first');
+    const start = Math.min(...list.map(x => x.region.start));
+    this.clipboard = {
+      kind: 'regions',
+      items: list.map(({ track, region }) => ({ trackId: track.id, audio: track.type === 'audio', region: JSON.parse(JSON.stringify(region)), offset: region.start - start })),
+    };
+    if (cut) this.deleteRegions();
+    toast(`${cut ? 'Cut' : 'Copied'} ${list.length} region${list.length === 1 ? '' : 's'}`);
+  }
+
+  // Notes paste into the open region; regions paste at the playhead, onto their own tracks (or onto
+  // the selected track when pasting a single region of a matching kind).
+  paste() {
+    const clip = this.clipboard;
+    if (!clip) return toast('Nothing to paste yet');
+    if (clip.kind === 'notes') {
+      if (this.bottomMode === 'editor' && this.editor.ctx) this.editor.paste(clip);
+      else toast('Open a region in the editor to paste notes into it');
+      return;
+    }
+    const at = store.ui.playhead;
+    const sel = store.selectedTrack;
+    const fits = (track, it) => track && (track.type === 'audio') === it.audio;
+    const fresh = new Set();
+    store.update(() => {
+      for (const it of clip.items) {
+        const track = clip.items.length === 1 && fits(sel, it) ? sel : fits(store.track(it.trackId), it) ? store.track(it.trackId) : null;
+        if (!track) continue;
+        const region = { ...JSON.parse(JSON.stringify(it.region)), id: uid(), start: at + it.offset };
+        track.regions.push(region);
+        fresh.add(region.id);
+      }
+    });
+    if (!fresh.size) return toast('No matching track to paste onto');
     store.ui.selectedRegions = fresh;
     this.refresh();
   }
@@ -945,6 +1065,8 @@ class App {
     $('#btn-smart').addEventListener('click', () => this.setBottom('smart'));
     $('#btn-editor').addEventListener('click', () => this.setBottom('editor'));
     $('#btn-master').addEventListener('click', () => this.setBottom('master'));
+    $('#btn-settings').addEventListener('click', () => this.openSettings());
+    if (this.settings.metronomeVolume != null) this.engine.click.volume.value = this.settings.metronomeVolume;
     $('#bottom-close').addEventListener('click', () => { this.bottomMode = null; this.renderBottom(); });
     $('#btn-new').addEventListener('click', () => this.newSong());
     $('#btn-open').addEventListener('click', () => this.open());
@@ -1046,7 +1168,11 @@ class App {
           s: () => this.save(e.shiftKey),
           o: () => this.open(),
           n: () => (e.altKey ? this.newTrackDialog() : this.newSong()),
-          d: () => this.duplicateRegions(),
+          d: () => (this.bottomMode === 'editor' && this.editor.hasSelection() ? this.editor.duplicate() : this.duplicateRegions()),
+          c: () => this.copy(false),
+          x: () => this.copy(true),
+          v: () => this.paste(),
+          ',': () => this.openSettings(),
           t: () => this.splitAtPlayhead(),
           k: () => this.toggleTyping(),
           a: () => (this.bottomMode === 'editor' ? this.editor.selectAll() : this.selectAllRegions()),
@@ -1058,6 +1184,9 @@ class App {
       }
       if (e.key === ' ') { e.preventDefault(); this.togglePlay(); return; }
       if (this.typing.on && this.typingKey(e, true)) { e.preventDefault(); return; }
+      // Editor tools: 1 Pointer, 2 Pencil, 3 Eraser, 4 Box select.
+      const tool = this.bottomMode === 'editor' && this.editor.ctx && TOOLS.find(t => t.key === e.key);
+      if (tool) { this.editor.setTool(tool.id); return; }
       const inEditor = this.bottomMode === 'editor' && this.editor.selected.size;
       switch (e.key) {
         case 'Enter': this.rewind(); break;

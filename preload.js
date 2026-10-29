@@ -16,5 +16,7 @@ contextBridge.exposeInMainWorld('host', {
   readFile: p => ipcRenderer.invoke('file:read', p),
   openCredits: () => ipcRenderer.invoke('shell:credits'),
   setLowLatency: on => ipcRenderer.invoke('audio:low-latency', on),
-  bootLowLatency: () => ipcRenderer.invoke('audio:boot-low-latency'),
+  bootAudioMode: () => ipcRenderer.invoke('audio:boot-mode'),
+  setTheme: theme => ipcRenderer.invoke('theme:set', theme),
+  relaunch: () => ipcRenderer.invoke('app:relaunch'),
 });

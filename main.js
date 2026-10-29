@@ -1,5 +1,5 @@
 // Electron main process: window, app:// protocol for bundled files, and file-system IPC.
-const { app, BrowserWindow, protocol, net, ipcMain, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, protocol, net, ipcMain, dialog, Menu, shell, nativeTheme } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
@@ -29,7 +29,11 @@ if (process.env.BB_SMOKE) {
 const bootSettings = (() => {
   try { return JSON.parse(require('node:fs').readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); } catch { return {}; }
 })();
-if (bootSettings.lowLatency) app.commandLine.appendSwitch('audio-buffer-size', '128');
+// Audio performance mode (Settings): 'low' latency, 'balanced' (default) or 'stable' for slower machines.
+const bootAudioMode = bootSettings.audioMode || (bootSettings.lowLatency ? 'low' : 'balanced');
+if (bootAudioMode === 'low') app.commandLine.appendSwitch('audio-buffer-size', '128');
+if (bootAudioMode === 'stable') app.commandLine.appendSwitch('audio-buffer-size', '1024');
+if (bootSettings.theme) nativeTheme.themeSource = bootSettings.theme;
 
 // On Linux/PipeWire the graph's block size ("quantum", often 1024 frames = 21 ms) sits under every app.
 // While monitoring in low-latency mode we ask for 128 frames, and restore the previous value afterwards.
@@ -219,7 +223,14 @@ function registerIpc(win) {
   });
 
   ipcMain.handle('audio:low-latency', (_e, on) => setLowLatencyQuantum(!!on));
-  ipcMain.handle('audio:boot-low-latency', () => !!bootSettings.lowLatency);
+  ipcMain.handle('audio:boot-mode', () => bootAudioMode);
+  ipcMain.handle('theme:set', (_e, theme) => { nativeTheme.themeSource = ['light', 'dark'].includes(theme) ? theme : 'system'; });
+  // Restart to apply audio settings (restoring PipeWire first, as quitting does).
+  ipcMain.handle('app:relaunch', async () => {
+    await setLowLatencyQuantum(false);
+    app.relaunch();
+    app.exit(0);
+  });
   ipcMain.handle('shell:credits', () => shell.openPath(path.join(ASSETS, 'samples', 'CREDITS.md')));
 }
 

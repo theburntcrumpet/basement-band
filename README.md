@@ -36,7 +36,11 @@ open it and start making music.
   tone stack, presence, noise gate, speaker cabinet). Monitor through it while you play; recordings
   stay clean (DI), so you can change the amp afterwards. Monitoring latency depends on your OS audio
   (shown in the app; ~24 ms on Linux/PipeWire with Low-latency mode).
-- **Editing**: piano roll, drum grid, region loop/resize/split/duplicate, undo/redo.
+- **Editing**: piano roll and drum grid with Pointer, Pencil, Eraser and Box-select tools; copy,
+  cut, paste and duplicate for notes and regions; Alt-drag to copy; the piano keys light up for
+  selected notes; region loop/resize/split; undo/redo.
+- **Settings** (⚙ or Ctrl+,): audio performance mode (Stable for slower computers, Balanced, Low
+  latency), input device, recording offset, count-in, metronome level, and light/dark/system theme.
 - **Mixing**: per-track volume, pan, tone, drive, reverb, echo and a Bass/Mid/Treble EQ; master
   bus compressor/limiter.
 - **Effects**: Vinyl (crackle, pops, age, wow), Tape, Radio and Lo-Fi, on any track or on the whole
@@ -95,9 +99,11 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
 
 ## Current limitations
 
+- **Audio performance:** if playback crackles or stutters on a slower computer, choose **Stable** in
+  Settings (bigger buffers). **Low latency** trades smoothness for responsiveness.
 - **Latency:** audio runs through Chromium's Web Audio, so there's no ASIO/JACK-level low latency.
   Measured guitar monitoring on Linux/PipeWire: ~60 ms by default, ~24 ms with **Low-latency mode**
-  (Input section; smallest Chromium buffers, and PipeWire's quantum lowered to 128 frames while
+  (Settings → Audio performance; smallest Chromium buffers, and PipeWire's quantum lowered to 128 frames while
   monitoring). Getting below ~10 ms needs a native audio path (see the roadmap). Until then, your
   interface's hardware direct monitoring gives zero-latency (dry) monitoring while recording.
 - **One time signature and tempo per song:** no tempo or meter changes partway through.
@@ -141,7 +147,10 @@ Roughly in priority order:
 | K | Metronome |
 | Ctrl+K | Musical Typing (A–' play notes, Z/X octave, C/V velocity) |
 | Y / B / E | Library / Smart Controls / Editor |
-| Ctrl+D | Duplicate region |
+| Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste notes (in the editor) or regions |
+| Ctrl+D | Duplicate selected notes or regions |
+| 1 / 2 / 3 / 4 | Editor tools: Pointer, Pencil, Eraser, Box select |
+| Ctrl+, | Settings |
 | Ctrl+T | Split region at playhead |
 | Delete | Delete regions or selected notes |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |

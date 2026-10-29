@@ -257,8 +257,12 @@ export class Engine extends EventTarget {
     this.metronome = false;
   }
 
-  async init() {
-    Tone.setContext(new Tone.Context({ latencyHint: 'interactive', lookAhead: 0.05 }));
+  // mode: 'low' | 'balanced' | 'stable'. Stable gives the audio thread bigger buffers and the scheduler
+  // more headroom, which avoids dropouts on slower machines at the cost of latency.
+  async init(mode = 'balanced') {
+    this.mode = mode;
+    const opts = { low: ['interactive', 0.05], balanced: ['interactive', 0.06], stable: ['playback', 0.15] }[mode] || ['interactive', 0.06];
+    Tone.setContext(new Tone.Context({ latencyHint: opts[0], lookAhead: opts[1] }));
     this.transport = Tone.getTransport();
     this.transport.PPQ = PPQ;
     // When the cycle wraps, cut off audio from the previous pass (anything started before the wrap).
@@ -476,7 +480,7 @@ export class Engine extends EventTarget {
   // context configured the same way (same device, same buffer settings).
   async measureOutputLatency() {
     try {
-      const probe = new AudioContext({ latencyHint: 'interactive' });
+      const probe = new AudioContext({ latencyHint: this.mode === 'stable' ? 'playback' : 'interactive' });
       const osc = probe.createOscillator(), mute = probe.createGain();
       mute.gain.value = 0;
       osc.connect(mute).connect(probe.destination);
