@@ -41,7 +41,8 @@ class App {
     this.settings = (await window.host?.getSettings()) || {};
     this.applyTheme(this.settings.theme || 'system');
     this.bootAudioMode = (await window.host?.bootAudioMode()) || 'balanced';
-    await this.engine.init(this.bootAudioMode);
+    this.bootSampleRate = this.settings.sampleRate || 0;
+    await this.engine.init(this.bootAudioMode, { sampleRate: this.bootSampleRate, outputDevice: this.settings.outputDevice || '' });
     this.arrange = new Arrange(this);
     this.editor = new Editor(this, $('#bottom-body'), $('#bottom-tools'));
     this.smart = new SmartControls(this, $('#bottom-body'), $('#bottom-tools'));
@@ -618,15 +619,52 @@ class App {
     ];
     const restartNote = h('div', { class: 'settings-note' });
     const updateRestart = () => {
-      const pending = this.audioMode() !== this.bootAudioMode;
+      const pending = this.audioMode() !== this.bootAudioMode || (s.sampleRate || 0) !== this.bootSampleRate;
       restartNote.replaceChildren(...(pending ? [
-        h('span', {}, 'Restart Basement Band to switch audio mode. Save your song first.'),
+        h('span', {}, 'Restart Basement Band to apply the new audio settings. Save your song first.'),
         h('button', { class: 'text accent', onclick: async () => { if (await this.confirmDiscard()) window.host?.relaunch(); } }, 'Restart now'),
       ] : [h('span', {}, `Running in ${MODES.find(m => m[0] === this.bootAudioMode)?.[1] || 'Balanced'} mode.`)]));
     };
     const modeList = h('div', { class: 'mode-list' }, MODES.map(([id, label, desc]) => h('label', { class: 'mode-option' },
       h('input', { type: 'radio', name: 'audio-mode', value: id, checked: this.audioMode() === id, onchange: async () => { await this.setAudioMode(id); updateRestart(); } }),
       h('div', {}, h('strong', {}, label), h('div', { class: 'settings-desc' }, desc)))));
+    updateRestart();
+
+    // Output device (switches straight away) and sample rate (on restart).
+    const output = h('select', {
+      class: 'wide-select',
+      onchange: async e => {
+        try {
+          await this.engine.setOutputDevice(e.target.value);
+          s.outputDevice = e.target.value;
+          save();
+          showLatency();
+        } catch (err) {
+          toast('Couldn\'t switch output: ' + err.message);
+          e.target.value = s.outputDevice || '';
+        }
+      },
+    }, h('option', { value: '' }, 'System default'));
+    navigator.mediaDevices?.enumerateDevices().then(list => {
+      for (const d of list.filter(x => x.kind === 'audiooutput' && x.deviceId !== 'default')) output.append(h('option', { value: d.deviceId, selected: d.deviceId === s.outputDevice }, d.label || 'Audio output'));
+    });
+    const deviceRate = Tone.getContext().sampleRate;
+    const rate = h('select', { class: 'wide-select', onchange: e => { s.sampleRate = Number(e.target.value); save(); updateRestart(); } },
+      [[0, 'Device default'], [44100, '44.1 kHz'], [48000, '48 kHz'], [88200, '88.2 kHz'], [96000, '96 kHz']]
+        .map(([v, l]) => h('option', { value: v, selected: (s.sampleRate || 0) === v }, l)));
+    const latency = h('div', { class: 'latency-readout' });
+    const showLatency = () => {
+      const r = this.engine.latencyReport();
+      const ms = v => `${v.toFixed(1)} ms`;
+      latency.replaceChildren(
+        h('div', {}, h('span', {}, 'Running at'), h('strong', {}, `${(r.sampleRate / 1000).toFixed(1)} kHz`)),
+        h('div', {}, h('span', {}, 'Output (buffer + device)'), h('strong', {}, ms(r.outputMs))),
+        h('div', {}, h('span', {}, 'Input'), h('strong', {}, r.inputMs == null ? 'not open' : ms(r.inputMs))),
+        h('div', {}, h('span', {}, 'Monitoring (input → speakers)'), h('strong', {}, r.monitorMs == null ? 'open an input to measure' : `${r.monitorMs} ms`)),
+      );
+    };
+    this.engine.measureOutputLatency().then(showLatency);
+    showLatency();
     updateRestart();
 
     const device = h('select', { class: 'wide-select', onchange: e => this.setInputDevice(e.target.value) }, h('option', { value: '' }, 'Default input'));
@@ -653,6 +691,11 @@ class App {
     close = modal(h('div', { class: 'settings' },
       h('h2', {}, 'Settings'),
       section('Audio performance', modeList, restartNote),
+      section('Audio output',
+        h('label', { class: 'field' }, h('span', {}, 'Output device'), output),
+        h('label', { class: 'field' }, h('span', {}, 'Sample rate'), rate,
+          h('span', { class: 'settings-desc' }, `Your device is running at ${(deviceRate / 1000).toFixed(1)} kHz. Match your audio interface to avoid resampling.`)),
+        h('h4', {}, 'Latency'), latency),
       section('Recording',
         h('label', { class: 'field' }, h('span', {}, 'Input device'), device),
         h('label', { class: 'field inline' }, h('span', {}, 'Recording offset (ms)'), offset,

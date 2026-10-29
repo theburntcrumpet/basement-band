@@ -340,10 +340,20 @@ export class Engine extends EventTarget {
 
   // mode: 'low' | 'balanced' | 'stable'. Stable gives the audio thread bigger buffers and the scheduler
   // more headroom, which avoids dropouts on slower machines at the cost of latency.
-  async init(mode = 'balanced') {
+  //   sampleRate: 44100 / 48000 / ... or 0 for the device's own rate (changing it needs a restart)
+  //   outputDevice: an audio output deviceId, or '' for the system default (can change any time)
+  async init(mode = 'balanced', { sampleRate = 0, outputDevice = '' } = {}) {
     this.mode = mode;
     const opts = { low: ['interactive', 0.05], balanced: ['interactive', 0.06], stable: ['playback', 0.15] }[mode] || ['interactive', 0.06];
-    Tone.setContext(new Tone.Context({ latencyHint: opts[0], lookAhead: opts[1] }));
+    // A plain browser AudioContext (Tone runs on it directly), so the output device can be chosen.
+    let raw;
+    try {
+      raw = new AudioContext({ latencyHint: opts[0], ...(sampleRate ? { sampleRate } : {}), ...(outputDevice ? { sinkId: outputDevice } : {}) });
+    } catch (err) {
+      console.warn('Audio settings not supported, using defaults', err);
+      raw = new AudioContext({ latencyHint: opts[0] });
+    }
+    Tone.setContext(new Tone.Context({ context: raw, lookAhead: opts[1] }));
     this.transport = Tone.getTransport();
     this.transport.PPQ = PPQ;
     // When the cycle wraps, cut off audio from the previous pass (anything started before the wrap).
@@ -751,6 +761,10 @@ export class Engine extends EventTarget {
   // Tone's context wrapper doesn't expose outputLatency, so measure it with a brief, silent native
   // context configured the same way (same device, same buffer settings).
   async measureOutputLatency() {
+    // The real context reports it directly once it's running; the probe below covers older setups.
+    const raw = Tone.getContext().rawContext;
+    for (let i = 0; i < 10 && raw.state === 'running' && !raw.outputLatency; i++) await new Promise(r => setTimeout(r, 60));
+    if (raw.outputLatency) return (this.outputLatency = raw.outputLatency);
     try {
       const probe = new AudioContext({ latencyHint: this.mode === 'stable' ? 'playback' : 'interactive' });
       const osc = probe.createOscillator(), mute = probe.createGain();
@@ -763,6 +777,28 @@ export class Engine extends EventTarget {
       if (value) this.outputLatency = value;
     } catch { /* keep the last measurement */ }
     return this.outputLatency || 0;
+  }
+
+  // Switches the output device while running ('' = system default).
+  async setOutputDevice(deviceId = '') {
+    const raw = Tone.getContext().rawContext;
+    if (!raw.setSinkId) throw new Error('Choosing an output device isn\'t supported here');
+    await raw.setSinkId(deviceId);
+    await this.measureOutputLatency();
+  }
+
+  // What the audio path costs right now, for Settings.
+  latencyReport() {
+    const raw = Tone.getContext().rawContext;
+    const input = this.inputInfo();
+    const out = (raw.baseLatency || 0) + (this.outputLatency || raw.outputLatency || 0) + MASTER_DELAY;
+    return {
+      sampleRate: raw.sampleRate,
+      bufferMs: (raw.baseLatency || 0) * 1000,
+      outputMs: out * 1000,
+      inputMs: input.open ? input.inputLatency * 1000 : null,
+      monitorMs: input.open ? input.monitorLatencyMs : null,
+    };
   }
 
   inputInfo() {

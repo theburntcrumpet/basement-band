@@ -619,6 +619,19 @@ module.exports = async function flows(win, app) {
     const saved = (await window.host.getSettings()).audioMode;
     document.querySelector('#modal input[value=balanced]').click();
     await new Promise(r => setTimeout(r, 100));
+    // Audio output: latency readout, live output switching, sample rate on restart.
+    const readout = document.querySelector('#modal .latency-readout').textContent;
+    if (!readout.includes('Running at') || !readout.includes('kHz') || !readout.includes('Output (buffer + device)') || !readout.includes(' ms')) return 'readout ' + readout;
+    await app.engine.setOutputDevice('');
+    const rateSel = [...document.querySelectorAll('#modal select')].find(x => [...x.options].some(o => o.value === '48000'));
+    rateSel.value = rateSel.value === '48000' ? '44100' : '48000';
+    rateSel.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 100));
+    const rateNote = document.querySelector('#modal .settings-note').textContent;
+    const savedRate = (await window.host.getSettings()).sampleRate;
+    rateSel.value = '0'; rateSel.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 100));
+    if (!rateNote.includes('Restart') || !(savedRate > 0)) return 'sample rate ' + rateNote + ' ' + savedRate;
     return modes === 'stable,balanced,low' && note.includes('Restart') && saved === 'stable' ? 'ok bg ' + bg : 'modes ' + modes + ' note ' + note + ' saved ' + saved;`);
 
   await new Promise(r => setTimeout(r, 200));
