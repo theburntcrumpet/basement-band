@@ -1,6 +1,6 @@
 // App controller: wires the store, audio engine and UI together.
 
-import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate, trackForPart, uid, barBeats, changeTimeSig } from './state.js';
+import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate, trackForPart, uid, barBeats, changeTimeSig, splitRegion } from './state.js';
 import { Engine, renderProject, songEnd, expandRegion, sourceSpb } from './engine/engine.js';
 import { getInstrument, isKit, loadBuffer } from './engine/instruments.js';
 import { setLibrary, inspect, registerDefs, exportDefs, INSTRUMENT_FILE } from './engine/user-instruments.js';
@@ -14,6 +14,7 @@ import { STYLES, partInstrument } from './music/band.js';
 import { KEY_NAMES } from './music/theory.js';
 import { TIME_SIGNATURES, meter, parseTimeSig, barBeat } from './music/meter.js';
 import { bpmAt, beatsFor } from './music/tempo.js';
+import { sections, addSection, duplicateSection, deleteSection } from './arrangement.js';
 import { Arrange, setupBackgroundDrop } from './ui/arrange.js';
 import { Editor, TOOLS } from './ui/editor.js';
 import { SmartControls } from './ui/smart.js';
@@ -617,6 +618,44 @@ class App {
       h('div', { class: 'actions' }, h('button', { class: 'text accent', onclick: () => close() }, 'Done'))));
   }
 
+  // ------------------------------------------------------------ song sections
+
+  addSectionAtPlayhead() {
+    const bar = barBeats(store.project);
+    const start = Math.floor(store.ui.playhead / bar) * bar;
+    store.update(p => addSection(p, start));
+  }
+
+  renameSection(sec) {
+    let close;
+    const input = h('input', { type: 'text', value: sec.name, style: { width: '100%' }, onkeydown: e => { e.stopPropagation(); if (e.key === 'Enter') done(); } });
+    const done = () => {
+      close();
+      const name = input.value.trim();
+      if (name) store.update(p => { p.markers.find(m => m.id === sec.id).name = name; });
+    };
+    close = modal([h('h2', {}, 'Rename section'), h('div', { class: 'field' }, input),
+      h('div', { class: 'actions' }, h('button', { class: 'text accent', onclick: done }, 'Rename'))]);
+    input.focus();
+    input.select();
+  }
+
+  sectionMenu(x, y, sec) {
+    const bars = Math.round((sec.end - sec.start) / barBeats(store.project));
+    contextMenu(x, y, [
+      { label: 'Rename…', action: () => this.renameSection(sec) },
+      { label: `Duplicate “${sec.name}” (${bars} bar${bars === 1 ? '' : 's'})`, action: () => { store.update(p => duplicateSection(p, sec)); toast(`Duplicated ${sec.name}; the rest of the song moved along`); } },
+      { label: 'Loop this section', action: () => store.update(p => { p.cycle = { on: true, start: sec.start, end: sec.end }; }) },
+      { label: 'Select its regions', action: () => {
+        store.ui.selectedRegions = new Set(store.project.tracks.flatMap(t => t.regions.filter(r => r.start < sec.end && r.start + r.length > sec.start).map(r => r.id)));
+        this.refresh();
+      } },
+      '-',
+      { label: 'Delete section and its contents', action: () => { store.update(p => deleteSection(p, sec)); toast(`Deleted ${sec.name}; the rest of the song moved up`); } },
+      { label: 'Remove marker only', action: () => store.update(p => { p.markers = p.markers.filter(m => m.id !== sec.id); }) },
+    ]);
+  }
+
   // ------------------------------------------------------------ tempo changes
 
   tempoChangeAt(beat) {
@@ -705,42 +744,7 @@ class App {
     const at = store.ui.playhead;
     const list = this.selectedRegions().filter(({ region }) => at > region.start + 1e-3 && at < region.start + region.length - 1e-3);
     if (!list.length) return toast('Put the playhead inside a selected region to split it');
-    store.update(() => {
-      for (const { track, region } of list) {
-        const cut = at - region.start;
-        const right = JSON.parse(JSON.stringify(region));
-        right.id = uid();
-        right.start = at;
-        right.length = region.length - cut;
-        if (track.type === 'audio') {
-          const loop = region.loopLength || region.length;
-          if (loop < region.length - 1e-6) {
-            // Looped clip: the right half keeps looping, starting partway into a pass.
-            right.phase = ((region.phase || 0) + cut) % loop;
-          } else {
-            right.offset = (region.offset || 0) + ((region.phase || 0) + cut) * sourceSpb(region, store.project);
-            right.phase = 0;
-            right.loopLength = right.length;
-            region.loopLength = cut;
-          }
-        } else {
-          // Bake loop repeats so both halves keep exactly what played before.
-          const loopLen = region.loopLength || region.length;
-          const all = [];
-          for (let off = 0; off < region.length; off += loopLen) {
-            for (const n of region.notes) if (n.t < loopLen && off + n.t < region.length) all.push({ ...n, t: off + n.t });
-          }
-          region.notes = all.filter(n => n.t < cut).map(n => ({ ...n, d: Math.min(n.d, cut - n.t) }));
-          right.notes = all.filter(n => n.t >= cut).map(n => ({ ...n, t: n.t - cut }));
-          right.loopLength = right.length;
-          region.loopLength = cut;
-          delete region.gen;
-          delete right.gen;
-        }
-        region.length = cut;
-        track.regions.push(right);
-      }
-    });
+    store.update(p => { for (const { track, region } of list) splitRegion(track, region, at, p); });
   }
 
   regionMenu(x, y, track, region) {
@@ -1228,6 +1232,7 @@ class App {
     $('#btn-editor').addEventListener('click', () => this.setBottom('editor'));
     $('#btn-master').addEventListener('click', () => this.setBottom('master'));
     $('#btn-settings').addEventListener('click', () => this.openSettings());
+    $('#btn-add-section').addEventListener('click', () => this.addSectionAtPlayhead());
     if (this.settings.metronomeVolume != null) this.engine.click.volume.value = this.settings.metronomeVolume;
     $('#bottom-close').addEventListener('click', () => { this.bottomMode = null; this.renderBottom(); });
     $('#btn-new').addEventListener('click', () => this.newSong());

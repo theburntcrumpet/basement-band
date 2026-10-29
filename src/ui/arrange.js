@@ -2,6 +2,7 @@
 
 import { h, $, drag, contextMenu, canvas2d, palette } from './dom.js';
 import { AUTO_PARAMS, AUTO_PARAM, curve, valueAt, staticValue, normalize } from '../engine/automation.js';
+import { sections } from '../arrangement.js';
 import { store, uid, TRACK_COLORS, resizeRegion } from '../state.js';
 import { meter } from '../music/meter.js';
 import { getInstrument } from '../engine/instruments.js';
@@ -97,6 +98,7 @@ export class Arrange {
     this.inner.style.width = HEADER_W + width + 'px';
     this.empty.classList.toggle('hidden', p.tracks.length > 0);
     this.renderRuler(width);
+    this.renderArrangement(width);
     this.meterEls.clear();
     this.autoCanvases = [];
     this.tracksEl.replaceChildren(...p.tracks.flatMap((t, i) => {
@@ -329,6 +331,42 @@ export class Arrange {
 
   clearRecording() {
     this.tracksEl.querySelectorAll('.region.recording').forEach(el => el.remove());
+  }
+
+  // ------------------------------------------------------------ arrangement (song sections)
+
+  renderArrangement(width) {
+    const lane = $('#arr-lane');
+    lane.style.width = width + 'px';
+    const z = this.zoom;
+    const secs = sections(store.project);
+    lane.replaceChildren(...(secs.length ? secs.map(sec => {
+      const el = h('div', {
+        class: 'section-block' + (store.ui.selectedSection === sec.id ? ' selected' : ''),
+        style: { left: sec.start * z + 'px', width: Math.max(8, (sec.end - sec.start) * z - 2) + 'px', background: sec.color },
+        title: `${sec.name}: click to jump here, double-click to rename, right-click for more, drag the left edge to move`,
+      }, h('span', {}, sec.name), h('div', { class: 'section-edge' }));
+      el.addEventListener('mousedown', e => this.sectionDown(e, sec));
+      el.addEventListener('dblclick', () => this.app.renameSection(sec));
+      el.addEventListener('contextmenu', e => { e.preventDefault(); this.app.sectionMenu(e.clientX, e.clientY, sec); });
+      return el;
+    }) : [h('div', { class: 'arr-hint' }, 'Mark the parts of your song (Intro, Verse, Chorus…) with ＋ to duplicate, delete or loop them.')]));
+  }
+
+  sectionDown(e, sec) {
+    if (e.button !== 0) return;
+    store.ui.selectedSection = sec.id;
+    const marker = store.project.markers.find(m => m.id === sec.id);
+    const edge = e.target.classList.contains('section-edge') || e.offsetX < 6;
+    if (!edge) {
+      this.app.seek(sec.start);
+      this.app.refresh();
+      return;
+    }
+    // Dragging the left edge moves where the section starts (the previous one grows or shrinks).
+    const bar = this.meter.barBeats, start = marker.start;
+    store.beginGesture();
+    drag(e, dx => { marker.start = Math.max(0, Math.round((start + dx / this.zoom) / bar) * bar); this.app.refresh(); }, () => store.endGesture());
   }
 
   // ------------------------------------------------------------ automation lanes

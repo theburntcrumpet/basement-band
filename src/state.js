@@ -3,6 +3,7 @@
 import { generate, STYLES, partInstrument, PART_LABELS } from './music/band.js';
 import { getInstrument } from './engine/instruments.js';
 import { meter, DEFAULT_TIME_SIG } from './music/meter.js';
+import { sourceSpb } from './engine/engine.js';
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -76,6 +77,40 @@ export function unrollNotes({ notes = [], length, loopLength }) {
     }
   }
   return out;
+}
+
+// Splits a region at song position `at` (beats); the right half is added to the track and returned.
+// MIDI loops are written out so both halves play exactly what played before; audio keeps its loop.
+export function splitRegion(track, region, at, project) {
+  const cut = at - region.start;
+  if (cut <= 1e-3 || cut >= region.length - 1e-3) return null;
+  const right = JSON.parse(JSON.stringify(region));
+  right.id = uid();
+  right.start = at;
+  right.length = region.length - cut;
+  if (track.type === 'audio') {
+    const loop = region.loopLength || region.length;
+    if (loop < region.length - 1e-6) {
+      // Looped clip: the right half keeps looping, starting partway into a pass.
+      right.phase = ((region.phase || 0) + cut) % loop;
+    } else {
+      right.offset = (region.offset || 0) + ((region.phase || 0) + cut) * sourceSpb(region, project);
+      right.phase = 0;
+      right.loopLength = right.length;
+      region.loopLength = cut;
+    }
+  } else {
+    const all = unrollNotes(region);
+    region.notes = all.filter(n => n.t < cut).map(n => ({ ...n, d: Math.min(n.d, cut - n.t) }));
+    right.notes = all.filter(n => n.t >= cut).map(n => ({ ...n, t: n.t - cut }));
+    right.loopLength = right.length;
+    region.loopLength = cut;
+    delete region.gen;
+    delete right.gen;
+  }
+  region.length = cut;
+  track.regions.push(right);
+  return right;
 }
 
 // Resizing (rather than looping) a region. `base` is the region as it was when the drag began, so

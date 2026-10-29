@@ -11,6 +11,9 @@ open it and start making music.
 - **Session Band**: pick a style (Pop, Rock, Funk, Lo-Fi, Jazz Trio, House, Ballad, Reggae, Country,
   Synthwave) and a chord progression, and it writes drums, bass, keys, guitar, pads and arps. Every
   part is an ordinary track you can edit, re-voice or re-roll.
+- **Song sections**: mark Intro/Verse/Chorus… on the Arrangement strip (＋). Right-click a section to
+  duplicate it (everything later moves along), delete it (the gap closes), loop it, or select its
+  regions; double-click to rename; drag its left edge to move it.
 - **Tempo changes**: right-click the ruler to add one at a bar; drag the ♩ marker to move it, click
   to edit, right-click to remove. The tempo box shows (and edits) the tempo at the playhead.
 - **Time signatures**: 2/4, 3/4, 4/4, 5/4, 6/8, 7/8, 9/8 and 12/8. Every band style adapts its
@@ -151,7 +154,8 @@ Roughly in priority order:
    **VST3/CLAP plugins** as a new instrument source.
 8. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
 9. **macOS builds** and code signing on all platforms.
-10. **Arrangement markers** (verse/chorus) and a song-structure view for the Session Band.
+10. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
+    Band build a whole song structure (intro, verses, choruses) in one go.
 
 ## Keyboard shortcuts
 

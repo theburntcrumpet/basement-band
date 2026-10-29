@@ -878,6 +878,51 @@ module.exports = async function flows(win, app) {
       ? 'ok metal brighter than vintage (' + metal.bright.toFixed(3) + ' vs ' + vintage.bright.toFixed(3) + '), IR darkens the cab (' + withIr.bright.toFixed(3) + ' vs ' + builtIn.bright.toFixed(3) + '), missing IR falls back'
       : 'missing IR fallback ' + missing.bright;`);
 
+  await check('song sections: duplicate, delete, loop, with everything after moving along', `
+    store.dirty = false;
+    await app.newSong();
+    const { expandRegion } = await import('./engine/engine.js');
+    const { sections } = await import('./arrangement.js');
+    const drums = app.addTrack('drums', 'kit-rock', 'Drums');
+    const keys = app.addTrack('instrument', 'grand-piano', 'Keys');
+    store.update(p => {
+      drums.regions.push({ id: 'd', start: 0, length: 16, loopLength: 4, notes: [{ t: 0, d: 0.25, n: 36, v: 1 }, { t: 2, d: 0.25, n: 38, v: 1 }] });
+      keys.regions.push({ id: 'k', start: 4, length: 8, loopLength: 8, notes: [{ t: 0, d: 2, n: 60, v: 0.8 }, { t: 5, d: 2, n: 64, v: 0.8 }] }); // crosses bar 3
+      keys.automation = { volume: [{ t: 10, v: -12 }] };
+      p.tempoChanges = [{ beat: 12, bpm: 90 }];
+    });
+    app.seek(0); app.addSectionAtPlayhead();
+    app.seek(8); app.addSectionAtPlayhead();
+    let secs = sections(store.project);
+    if (secs.map(s => s.name + ':' + s.start + '-' + s.end).join(',') !== 'Intro:0-8,Verse:8-16') return 'sections ' + JSON.stringify(secs);
+    if (!document.querySelector('.section-block')) return 'no blocks drawn';
+    const notesIn = (a, b, shift = 0) => store.project.tracks.flatMap(t => t.regions.flatMap(r => expandRegion(r)).filter(n => n.t >= a && n.t < b).map(n => t.name + n.n + '@' + (n.t - shift))).sort().join(' ');
+    const verse = notesIn(8, 16);
+    // Duplicate the Verse: a copy at 16-24, everything later (nothing yet) moves along.
+    const { duplicateSection, deleteSection } = await import('./arrangement.js');
+    store.update(p => duplicateSection(p, secs[1]));
+    secs = sections(store.project);
+    if (secs.map(s => s.name + ':' + s.start).join(',') !== 'Intro:0,Verse:8,Verse:16') return 'after duplicate ' + secs.map(s => s.name + ':' + s.start);
+    if (notesIn(16, 24, 8) !== verse) return 'copy differs: ' + notesIn(16, 24, 8) + ' vs ' + verse;
+    if (!store.project.tempoChanges.some(c => c.beat === 20) || !keys.automation.volume.some(p => p.t === 18)) return 'tempo/automation not copied ' + JSON.stringify([store.project.tempoChanges, keys.automation]);
+    // Delete the Intro: everything moves up 8 beats.
+    store.update(p => deleteSection(p, sections(p)[0]));
+    secs = sections(store.project);
+    if (secs.map(s => s.name + ':' + s.start).join(',') !== 'Verse:0,Verse:8') return 'after delete ' + secs.map(s => s.name + ':' + s.start);
+    if (notesIn(0, 8) !== verse.split(' ').map(x => x.replace(/@([0-9.]+)$/, (m, t) => '@' + (Number(t) - 8))).sort().join(' ')) return 'shifted notes ' + notesIn(0, 8);
+    if (store.project.tempoChanges.map(c => c.beat).sort((a, b) => a - b).join(',') !== '4,12') return 'tempo after delete ' + JSON.stringify(store.project.tempoChanges);
+    // Loop a section.
+    app.sectionMenu(0, 0, secs[1]);
+    [...document.querySelectorAll('#menu button')].find(b => b.textContent.startsWith('Loop')).click();
+    const c = store.project.cycle;
+    if (!(c.on && c.start === 8 && c.end === 16)) return 'loop ' + JSON.stringify(c);
+    // Undo brings the Intro back.
+    store.undo(); store.undo();
+    return sections(store.project).length === 3 ? 'ok duplicate copies notes, tempo and automation; delete closes the gap; loop; undo' : 'undo ' + sections(store.project).length;`);
+
+  await new Promise(r => setTimeout(r, 200));
+  await shot('20-sections');
+
   await check('piano roll follows the selected track and region', `
     store.dirty = false;
     await app.newSong();
