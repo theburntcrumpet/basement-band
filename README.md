@@ -92,6 +92,7 @@ VST3/CLAP plugin host could be added later as another source kind.
 ```sh
 npm run dist:linux   # dist/Basement Band-<version>-linux-x86_64.AppImage and .deb
 npm run dist:win     # dist/Basement Band-Setup-<version>.exe and -Portable-<version>.exe
+npm run dist:mac     # dist/*.dmg and *.zip for Apple Silicon and Intel (needs a Mac)
 ```
 
 Windows builds can be made on Linux if `wine` is installed. Installers bundle the sample library,
@@ -103,12 +104,14 @@ Publishing a GitHub release builds the app and attaches the installers to it
 (`.github/workflows/release.yml`):
 
 1. Create a release with a version tag such as `v0.2.0` (the app version is taken from the tag).
-2. Publish it. The **Release** workflow builds the Linux AppImage and `.deb` and the Windows
-   installer and portable `.exe`, and uploads them to that release (about 15 minutes).
+2. Publish it. The **Release** workflow builds the Linux AppImage and `.deb`, the Windows installer
+   and portable `.exe`, and macOS `.dmg`/`.zip` for Apple Silicon and Intel, and uploads them to that
+   release (about 15–20 minutes).
 
 To rebuild artifacts for an existing release, run the workflow manually from the Actions tab and
 enter its tag. Every push and pull request also runs the unit tests (`.github/workflows/ci.yml`).
-Builds are unsigned, so Windows SmartScreen will warn on first launch.
+Builds aren't signed with paid certificates: Windows SmartScreen warns on first launch, and on macOS
+right-click the app and choose **Open** the first time (or run `xattr -cr "/Applications/Basement Band.app"`).
 
 ## Current limitations
 
@@ -133,7 +136,8 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
   wheel, pitch bend) don't change sounds yet; large libraries load fully into memory.
 - **MIDI files** use one tempo (the file's first) and don't carry controller data beyond sustain.
 - **The Freesound recordings are high-quality previews** (128 kbps MP3), not the original WAVs.
-- **macOS isn't built or tested** (Electron supports it; it needs a Mac runner and signing).
+- **macOS builds are produced by the release workflow but haven't been tested on a Mac yet**, and
+  aren't notarized (see Releases for the first-launch step).
 - **Windows builds are tested only under Wine** in development, not on real Windows hardware.
 
 ## Roadmap
@@ -153,7 +157,7 @@ Roughly in priority order:
    running the amp sim for sub-10 ms guitar monitoring; the same helper would host
    **VST3/CLAP plugins** as a new instrument source.
 8. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
-9. **macOS builds** and code signing on all platforms.
+9. ~~macOS builds~~ (done, ad-hoc signed; untested). Still to do: paid code signing/notarization.
 10. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
     Band build a whole song structure (intro, verses, choruses) in one go.
 

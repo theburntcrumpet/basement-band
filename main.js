@@ -275,7 +275,8 @@ async function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
-  Menu.setApplicationMenu(null);
+  // No menu bar on Windows/Linux; macOS needs its app menu for ⌘Q and the edit shortcuts in text fields.
+  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]) : null);
   registerIpc(win);
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();

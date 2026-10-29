@@ -33,6 +33,11 @@ jobs:
             os: windows-latest
             targets: --win nsis portable
             files: dist/*.exe
+          # Ad-hoc signed (no Apple developer certificate): first launch needs right-click > Open.
+          - name: macOS
+            os: macos-latest
+            targets: --mac dmg zip --x64 --arm64
+            files: dist/*.dmg dist/*-mac-*.zip
     runs-on: ${{ matrix.os }}
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}

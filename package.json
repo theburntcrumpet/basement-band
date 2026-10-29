@@ -15,7 +15,8 @@
     "dist:win": "electron-builder --win nsis portable",
     "smoke": "env -u WAYLAND_DISPLAY BB_SMOKE=test/flows.cjs BB_TEST_ROOTS=/tmp/basement-band-test-ir xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox --use-fake-device-for-media-stream --use-fake-ui-for-media-stream",
     "levels": "env -u WAYLAND_DISPLAY BB_SMOKE=test/levels.cjs xvfb-run -a electron . --ozone-platform=x11 --no-sandbox",
-    "test:instruments": "env -u WAYLAND_DISPLAY BB_SMOKE=test/instruments.cjs BB_TEST_ROOTS=assets/samples xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox"
+    "test:instruments": "env -u WAYLAND_DISPLAY BB_SMOKE=test/instruments.cjs BB_TEST_ROOTS=assets/samples xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox",
+    "dist:mac": "electron-builder --mac dmg zip --x64 --arm64"
   },
   "build": {
     "appId": "io.github.basementband",
@@ -62,6 +63,19 @@
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Basement Band records from your microphone or audio interface."
+      }
     }
   },
   "dependencies": {
