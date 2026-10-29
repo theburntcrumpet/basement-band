@@ -9,8 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const base = path.join(ROOT, 'native', 'plugin-host', 'build', 'bb-plugin-host_artefacts', 'Release');
-const helper = process.argv[2] || (process.platform === 'darwin' ? path.join(base, 'bb-plugin-host.app', 'Contents', 'MacOS', 'bb-plugin-host')
-  : path.join(base, process.platform === 'win32' ? 'bb-plugin-host.exe' : 'bb-plugin-host'));
+const helper = process.argv[2] || path.join(base, process.platform === 'win32' ? 'bb-plugin-host.exe' : 'bb-plugin-host');
 const pluginsDir = path.join(ROOT, 'plugins');
 const fail = msg => { console.error('FAIL ' + msg); process.exit(1); };
 const lastJson = out => JSON.parse(String(out).trim().split('\n').pop());

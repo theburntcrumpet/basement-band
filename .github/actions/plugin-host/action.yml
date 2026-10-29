@@ -19,7 +19,6 @@ runs:
       run: |
         args=(-S native/plugin-host -B native/plugin-host/build -DCMAKE_BUILD_TYPE=Release)
         if [ "$RUNNER_OS" = Linux ]; then args+=(-G Ninja); fi
-        if [ "$RUNNER_OS" = macOS ]; then args+=("-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"); fi
         cmake "${args[@]}"
         cmake --build native/plugin-host/build --config Release --parallel
 

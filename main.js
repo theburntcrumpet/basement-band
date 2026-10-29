@@ -255,7 +255,7 @@ function registerIpc(win) {
   });
   ipcMain.handle('shell:credits', () => shell.openPath(path.join(ASSETS, 'samples', 'CREDITS.md')));
 
-  // ---- plugins (VST3 / AU / LV2 via the native helper)
+  // ---- plugins (VST3, and LV2 on Linux, via the native helper)
   const send = m => { if (!win.isDestroyed()) win.webContents.send('plugin:msg', m); };
   pluginHost = new plugins.HostProcess(send);
   ipcMain.handle('plugins:scan', async () => {
@@ -297,8 +297,7 @@ async function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
-  // No menu bar on Windows/Linux; macOS needs its app menu for ⌘Q and the edit shortcuts in text fields.
-  Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]) : null);
+  Menu.setApplicationMenu(null);
   registerIpc(win);
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();

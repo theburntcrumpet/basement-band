@@ -1,5 +1,7 @@
 # Builds the app when a GitHub release is published and attaches the installers to it.
 # The app version is taken from the release tag (v1.2.3 -> 1.2.3).
+# Run it by hand with an empty tag for a test build: the installers are attached to the workflow run
+# (Artifacts) instead of a release.
 name: Release
 
 on:
@@ -8,14 +10,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build and attach artifacts to (e.g. v0.2.0)
-        required: true
+        description: Release tag to build and attach installers to (e.g. v0.2.0). Leave empty for a test build of the selected branch.
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  group: release-${{ github.event.release.tag_name || inputs.tag || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -33,18 +36,13 @@ jobs:
             os: windows-latest
             targets: --win nsis portable
             files: dist/*.exe
-          # Ad-hoc signed (no Apple developer certificate): first launch needs right-click > Open.
-          - name: macOS
-            os: macos-latest
-            targets: --mac dmg zip --x64 --arm64
-            files: dist/*.dmg dist/*-mac-*.zip
     runs-on: ${{ matrix.os }}
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.TAG || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -65,6 +63,7 @@ jobs:
         run: npm run fetch-samples
 
       - name: Set version from tag
+        if: env.TAG != ''
         shell: bash
         run: npm version --no-git-tag-version --allow-same-version "${TAG#v}"
 
@@ -78,7 +77,19 @@ jobs:
         run: npx electron-builder ${{ matrix.targets }} --publish never
 
       - name: Attach to release
+        if: env.TAG != ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" ${{ matrix.files }} --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Keep test-build installers on the workflow run
+        if: env.TAG == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: basement-band-${{ matrix.name }}
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.exe
+          retention-days: 14

@@ -1,6 +1,6 @@
 # Basement Band
 
-A simple, GarageBand-style music studio for Windows, Linux and macOS. It ships with a full band of
+A simple, GarageBand-style music studio for Windows and Linux. It ships with a full band of
 instruments, a drummer that writes its own parts, a loop library and a sample browser, so you can
 open it and start making music.
 
@@ -11,7 +11,7 @@ open it and start making music.
 - **Session Band**: pick a style (Pop, Rock, Funk, Lo-Fi, Jazz Trio, House, Ballad, Reggae, Country,
   Synthwave) and a chord progression, and it writes drums, bass, keys, guitar, pads and arps. Every
   part is an ordinary track you can edit, re-voice or re-roll.
-- **Plugins**: VST3 instruments on Windows, macOS and Linux (plus AU and LV2), with the Dexed FM
+- **Plugins**: VST3 instruments on Windows and Linux (plus LV2 on Linux), with the Dexed FM
   synth included. See [Plugins](#plugins-vst3).
 - **Song sections**: mark Intro/Verse/Chorus… on the Arrangement strip (＋). Right-click a section to
   duplicate it (everything later moves along), delete it (the gap closes), loop it, or select its
@@ -88,8 +88,8 @@ Sounds → **My Instruments** → **＋ SF2 / SFZ…** or **＋ Folder…** (or 
 
 ## Plugins (VST3)
 
-Sounds → **Plugins** lists the instrument plugins installed on your computer: VST3 on Windows,
-macOS and Linux, plus Audio Units on macOS and LV2 on Linux. Click one to use it on a track, and
+Sounds → **Plugins** lists the instrument plugins installed on your computer: VST3 on Windows and
+Linux, plus LV2 on Linux. Click one to use it on a track, and
 **Open Plugin Window** (in Smart Controls) shows the plugin's own interface. Plugin settings are
 saved in the song. **⟳ Rescan** finds newly installed plugins; **＋ Folder…** adds a folder outside
 the usual locations.
@@ -120,7 +120,6 @@ Without the helper the app still runs; the Plugins section just says plugin supp
 ```sh
 npm run dist:linux   # dist/Basement Band-<version>-linux-x86_64.AppImage and .deb
 npm run dist:win     # dist/Basement Band-Setup-<version>.exe and -Portable-<version>.exe
-npm run dist:mac     # dist/*.dmg and *.zip for Apple Silicon and Intel (needs a Mac)
 ```
 
 Windows builds can be made on Linux if `wine` is installed. Installers bundle the sample library,
@@ -133,14 +132,17 @@ Publishing a GitHub release builds the app and attaches the installers to it
 (`.github/workflows/release.yml`):
 
 1. Create a release with a version tag such as `v0.2.0` (the app version is taken from the tag).
-2. Publish it. The **Release** workflow builds the Linux AppImage and `.deb`, the Windows installer
-   and portable `.exe`, and macOS `.dmg`/`.zip` for Apple Silicon and Intel, and uploads them to that
-   release (about 15–20 minutes).
+2. Publish it. The **Release** workflow builds the Linux AppImage and `.deb` and the Windows installer
+   and portable `.exe` (each with plugin support and Dexed), and uploads them to that release (about
+   15–20 minutes).
 
 To rebuild artifacts for an existing release, run the workflow manually from the Actions tab and
 enter its tag. Every push and pull request also runs the unit tests (`.github/workflows/ci.yml`).
-Builds aren't signed with paid certificates: Windows SmartScreen warns on first launch, and on macOS
-right-click the app and choose **Open** the first time (or run `xattr -cr "/Applications/Basement Band.app"`).
+Builds aren't signed with a paid certificate, so Windows SmartScreen warns on first launch.
+
+**Test build:** to try the installers before releasing, run the **Release** workflow from the Actions
+tab and leave the tag empty. It builds everything from the chosen branch and attaches the installers
+to that workflow run (under Artifacts) instead of a release.
 
 ## Current limitations
 
@@ -169,8 +171,6 @@ right-click the app and choose **Open** the first time (or run `xattr -cr "/Appl
   wheel, pitch bend) don't change sounds yet; large libraries load fully into memory.
 - **MIDI files** use one tempo (the file's first) and don't carry controller data beyond sustain.
 - **The Freesound recordings are high-quality previews** (128 kbps MP3), not the original WAVs.
-- **macOS builds are produced by the release workflow but haven't been tested on a Mac yet**, and
-  aren't notarized (see Releases for the first-launch step).
 - **Windows builds are tested only under Wine** in development, not on real Windows hardware.
 
 ## Roadmap
@@ -190,9 +190,8 @@ Roughly in priority order:
    inserts, CLAP, and moving live audio (input monitoring, the amp sim) into the native helper
    with JACK/PipeWire/ASIO/WASAPI for sub-10 ms guitar monitoring.
 8. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
-9. ~~macOS builds~~ (done, ad-hoc signed; untested). Still to do: paid code signing/notarization.
-10. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
-    Band build a whole song structure (intro, verses, choruses) in one go.
+9. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
+   Band build a whole song structure (intro, verses, choruses) in one go.
 
 ## Keyboard shortcuts
 
@@ -244,7 +243,7 @@ npm test         # music theory and generator unit tests
 npm run smoke    # end-to-end flows in a hidden app window (Linux, needs xvfb-run; forces X11 so
                  # nothing opens on a Wayland desktop). Plugins are exercised with a stand-in
                  # helper (test/fake-plugin-host.cjs), so no native build is needed
-npm run check:plugin-host  # the real helper with Dexed (CI runs this on Linux, Windows and macOS)
+npm run check:plugin-host  # the real helper with Dexed (CI runs this on Linux and Windows)
 npm run levels   # renders every instrument and prints its loudness
 npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses FluidR3_GM.sf2
                            # if installed; set BB_SFZ_TEST_DIR to a folder of SFZ libraries)

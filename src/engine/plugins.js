@@ -1,4 +1,4 @@
-// Plugin instruments (VST3, plus AU on macOS and LV2 on Linux), hosted by the native helper.
+// Plugin instruments (VST3, plus LV2 on Linux), hosted by the native helper.
 //
 // The helper renders each plugin a little ahead of the audio clock and the audio streams into the
 // track through the bb-stream worklet. Song notes don't go through Tone's scheduler (it only hands

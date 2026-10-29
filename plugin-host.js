@@ -12,7 +12,7 @@ const EXE = process.platform === 'win32' ? 'bb-plugin-host.exe' : 'bb-plugin-hos
 function helperPath() {
   if (process.env.BB_PLUGIN_HOST) return path.resolve(process.env.BB_PLUGIN_HOST);
   const base = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(ROOT, 'native', 'plugin-host', 'build', 'bb-plugin-host_artefacts', 'Release');
-  return process.platform === 'darwin' ? path.join(base, 'bb-plugin-host.app', 'Contents', 'MacOS', 'bb-plugin-host') : path.join(base, EXE);
+  return path.join(base, EXE);
 }
 
 // Plugins that ship with the app (Dexed); see scripts/fetch-plugins.mjs.

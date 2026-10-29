@@ -2,7 +2,7 @@
 // Downloads the plugins that ship with Basement Band into plugins/ (bundled into the installers).
 // Currently Dexed, a free DX7-style FM synth (GPL-3.0, https://github.com/asb2m10/dexed).
 //
-//   node scripts/fetch-plugins.mjs [--platform linux|win32|darwin] [--force]
+//   node scripts/fetch-plugins.mjs [--platform linux|win32] [--force]
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -22,7 +22,6 @@ const DEXED = {
   builds: {
     linux: { file: 'Dexed-1.0.1-lnx.zip', sha256: '2bac3d0c4237e8c22c4274b6d5b59fe6329fcae72864f81b5830393eff354fc1' },
     win32: { file: 'Dexed-1.0.1-win.zip', sha256: '1f118445f2c5c411636bb41ddf8b456db09af74cd38f9ede8a93a01020505f05' },
-    darwin: { file: 'Dexed-1.0.1-macOS.zip', sha256: '4269448bc1312424cafd29aff615d891bc5905ebfc54b42ce70c56b9b10dc401' },
   },
 };
 
@@ -48,7 +47,7 @@ async function main() {
   await fs.mkdir(tmp, { recursive: true });
   const zip = path.join(tmp, build.file);
   await fs.writeFile(zip, bytes);
-  // unzip on Linux; bsdtar (built into Windows 10+ and macOS) reads zips elsewhere.
+  // unzip on Linux; Windows 10+ has bsdtar, which reads zips.
   if (process.platform === 'linux') execFileSync('unzip', ['-q', zip, 'Dexed.vst3/*', 'LICENSE', '-d', tmp]);
   // On Windows use the system's bsdtar explicitly: Git Bash's GNU tar can't read zips and takes "D:" for a host.
   else execFileSync(process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar', ['-xf', build.file], { cwd: tmp });
