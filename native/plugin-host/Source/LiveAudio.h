@@ -171,7 +171,8 @@ public:
     String open (const var& m)
     {
         close();
-        const String type = m["type"];
+        String type = m["type"];
+        if (type.isEmpty()) type = preferredType();
         if (type.isNotEmpty()) devices.setCurrentAudioDeviceType (type, true);
         auto* t = devices.getCurrentDeviceTypeObject();
         if (t == nullptr) return "No audio system available";
@@ -188,6 +189,22 @@ public:
         if (devices.getCurrentAudioDevice() == nullptr) return "The audio device couldn't be opened";
         devices.addAudioCallback (this);
         startTimerHz (20);
+        return {};
+    }
+
+    // The lowest-latency system that's actually present: JACK (PipeWire's, on most current Linux
+    // desktops) over ALSA; WASAPI's low-latency shared mode on Windows (ASIO only when chosen, since
+    // it takes the interface over).
+    String preferredType()
+    {
+        for (auto name : { "JACK", "Windows Audio (Low Latency Mode)", "Windows Audio", "ALSA", "DirectSound" })
+            for (auto* t : devices.getAvailableDeviceTypes())
+                if (t->getTypeName() == name)
+                {
+                    t->scanForDevices();
+                    if (! t->getDeviceNames (false).isEmpty())
+                        return name;
+                }
         return {};
     }
 

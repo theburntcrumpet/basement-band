@@ -30,6 +30,8 @@ target_compile_definitions(bb-plugin-host PRIVATE
   JUCE_PLUGINHOST_LV2=$<BOOL:${UNIX}>
   JUCE_JACK=$<BOOL:${UNIX}>
   JUCE_ALSA=$<BOOL:${UNIX}>
+  # ASIO on Windows, using the SDK headers JUCE bundles (Steinberg offers the ASIO SDK under GPL-3).
+  JUCE_ASIO=$<BOOL:${WIN32}>
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
   JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:bb-plugin-host,JUCE_PRODUCT_NAME>"

@@ -49,6 +49,10 @@ open it and start making music.
 - **Editing**: piano roll and drum grid with Pointer, Pencil, Eraser and Box-select tools; copy,
   cut, paste and duplicate for notes and regions; Alt-drag to copy; the piano keys light up for
   selected notes; region loop/resize/split; undo/redo.
+- **Low-latency guitar monitoring**: a native audio engine (JACK/ALSA on Linux; WASAPI, ASIO or
+  DirectSound on Windows) plays your amp, cabinet and effects live with only your interface's
+  buffering as delay (a few ms), and records the clean signal sample-accurately. It sounds the same
+  as playback: the native chain is a port of the app's own, checked to within 1 dB per octave.
 - **Settings** (⚙ or Ctrl+,): audio performance mode (Stable for slower computers, Balanced, Low
   latency), input device, recording offset, count-in, metronome level, and light/dark/system theme.
 - **Mixing**: per-track volume, pan, tone, drive, reverb, echo and a Bass/Mid/Treble EQ; master
@@ -148,11 +152,12 @@ to that workflow run (under Artifacts) instead of a release.
 
 - **Audio performance:** if playback crackles or stutters on a slower computer, choose **Stable** in
   Settings (bigger buffers). **Low latency** trades smoothness for responsiveness.
-- **Latency:** audio runs through Chromium's Web Audio, so there's no ASIO/JACK-level low latency.
-  Measured guitar monitoring on Linux/PipeWire: ~60 ms by default, ~24 ms with **Low-latency mode**
-  (Settings → Audio performance; smallest Chromium buffers, and PipeWire's quantum lowered to 128 frames while
-  monitoring). Getting below ~10 ms needs a native audio path (see the roadmap). Until then, your
-  interface's hardware direct monitoring gives zero-latency (dry) monitoring while recording.
+- **Latency:** guitar monitoring and recording go through the low-latency engine (Settings →
+  Low-latency engine): a few milliseconds plus your interface's converters. Song playback, playing
+  instruments live and everything else still run in Chromium's Web Audio (~25–60 ms output latency
+  depending on Settings → Audio performance) until the rest of the engine moves native (see the
+  roadmap). Native monitoring doesn't yet include a track's vinyl/tape/radio/lo-fi effect or the
+  Master FX, and records mono (a stereo input is mixed down).
 - **One time signature per song.** Tempo can change partway through (right-click the ruler), but
   the meter can't yet. An audio clip spanning a tempo change follows the tempo where it starts.
 - **Time-stretching** (WSOLA) keeps pitch and timing but can smear very dense or percussive audio at
@@ -186,12 +191,15 @@ Roughly in priority order:
 5. ~~Tempo changes~~ within a song (done); time-signature changes still to do.
 6. ~~Smaller song files~~ (recordings now stored as FLAC); optionally keep audio in a folder beside
    the song.
-7. ~~VST3 instrument plugins~~ (done, with Dexed bundled). Next: **effect plugins** on track
-   inserts, CLAP, and moving live audio (input monitoring, the amp sim) into the native helper
-   with JACK/PipeWire/ASIO/WASAPI for sub-10 ms guitar monitoring.
-8. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
-9. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
-   Band build a whole song structure (intro, verses, choruses) in one go.
+7. ~~VST3 instrument plugins~~ (done, with Dexed bundled).
+8. **Native audio engine**, in stages:
+   1. ~~Live guitar monitoring and recording~~ (done: JACK/ALSA, WASAPI/ASIO/DirectSound).
+   2. Native instruments (samplers, SoundFonts/SFZ, plugins in-process) for low-latency playing.
+   3. The whole mixer native: all tracks, effects, automation and export; effect plugins on track
+      inserts; the remaining track effects and Master FX in the monitoring path.
+9. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
+10. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
+    Band build a whole song structure (intro, verses, choruses) in one go.
 
 ## Keyboard shortcuts
 
@@ -244,6 +252,8 @@ npm run smoke    # end-to-end flows in a hidden app window (Linux, needs xvfb-ru
                  # nothing opens on a Wayland desktop). Plugins are exercised with a stand-in
                  # helper (test/fake-plugin-host.cjs), so no native build is needed
 npm run check:plugin-host  # the real helper with Dexed (CI runs this on Linux and Windows)
+npm run check:live-audio   # native monitoring and recording on a virtual interface (also in CI)
+npm run test:native        # the app with the real helper: native vs Web Audio tone, live monitoring
 npm run levels   # renders every instrument and prints its loudness
 npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses FluidR3_GM.sf2
                            # if installed; set BB_SFZ_TEST_DIR to a folder of SFZ libraries)
@@ -252,7 +262,8 @@ npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses
 ## Licenses
 
 The code is MIT licensed, except the plugin helper in `native/plugin-host`, which is built with
-JUCE and is therefore AGPL-3.0; it is a separate program the app talks to over pipes. The bundled
+JUCE and is therefore AGPL-3.0; it is a separate program the app talks to over pipes. On Windows it
+includes Steinberg's ASIO SDK headers (bundled with JUCE) under their GPL-3.0 option. The bundled
 Dexed plugin is GPL-3.0 (source: https://github.com/asb2m10/dexed). MP3 export uses LAME via `@breezystack/lamejs` (LGPL-3.0), shipped as a
 separate, replaceable file. The sample library is not covered by MIT. It comes from the Salamander
 Grand Piano, VSCO 2 Community Edition, Karoryfer, University of Iowa MIS and Freesound (CC-BY 3.0),

@@ -8,6 +8,8 @@ import { FxSlot } from './effects.js';
 import { AmpSlot, irBuffers } from './amp.js';
 import { AUTO_PARAMS, curve, valueAt, staticValue, rampsFrom } from './automation.js';
 import { PluginInstrument, pluginsReady, renderPluginTrack, bridge } from './plugins.js';
+import { NativeAudio } from './native-audio.js';
+import { heardContextTime, placeTake } from './take-placement.js';
 
 const Tone = window.Tone;
 const PPQ = 192;
@@ -336,6 +338,19 @@ export class Engine extends EventTarget {
     this.project = null;
     this.recording = null;
     this.metronome = false;
+    // The native low-latency engine for monitoring and recording, when enabled (see useNative()).
+    this.native = new NativeAudio();
+    this.nativeSettings = null;
+  }
+
+  // settings: {type, input, output, buffer} to monitor and record through the native helper, or null
+  // to use the browser's own input path.
+  useNative(settings) {
+    this.nativeSettings = settings;
+  }
+
+  get nativeActive() {
+    return !!this.nativeSettings && !!this.native.device;
   }
 
   // mode: 'low' | 'balanced' | 'stable'. Stable gives the audio thread bigger buffers and the scheduler
@@ -392,6 +407,11 @@ export class Engine extends EventTarget {
       if (track.type !== 'audio' && node.instrumentId !== track.instrument && this.pending.get(track.id) !== track.instrument) {
         this.loadTrackInstrument(track.id, track.instrument);
       }
+    }
+    if (this.monitor?.native) {
+      clearTimeout(this.nativeSync);
+      const { trackId, channel } = this.monitor;
+      this.nativeSync = setTimeout(() => this.native.monitor(project.tracks.find(t => t.id === trackId), project, channel).catch(() => {}), 20);
     }
     this.transport.loop = !!project.cycle?.on;
     if (project.cycle) {
@@ -739,6 +759,17 @@ export class Engine extends EventTarget {
 
   // Opens the input device with every voice-call "enhancement" off — they mangle instruments.
   async openInput(deviceId) {
+    if (this.nativeSettings) {
+      if (this.native.device) return;
+      try {
+        await this.native.open(this.nativeSettings, Tone.getContext().sampleRate);
+        return;
+      } catch (err) {
+        // Fall back to the browser's input for this session.
+        this.nativeSettings = null;
+        this.dispatchEvent(new CustomEvent('warning', { detail: `Low-latency audio isn't available (${err.message}); using standard monitoring.` }));
+      }
+    }
     const id = deviceId || '';
     if (this.inputStream && this.inputDeviceId === id) return;
     this.closeInput(true);
@@ -802,6 +833,10 @@ export class Engine extends EventTarget {
   }
 
   inputInfo() {
+    if (this.nativeActive) {
+      const d = this.native.device;
+      return { open: true, native: true, channels: (d.inputChannels || []).length || 2, label: d.input || d.type, monitorLatencyMs: this.native.monitorLatencyMs(), inputLatency: (d.inputLatency || 0) / d.rate, device: d };
+    }
     const settings = this.inputStream?.getAudioTracks()[0]?.getSettings() || {};
     const raw = Tone.getContext().rawContext;
     const inLatency = settings.latency || 0;
@@ -832,6 +867,7 @@ export class Engine extends EventTarget {
 
   // Peak level of the chosen input in dB (for the input meter).
   inputLevel(channel = 'left') {
+    if (this.nativeActive) return this.native.levelDb();
     const t = this.inputTaps?.[channel];
     if (!t) return -Infinity;
     t.analyser.getFloatTimeDomainData(t.data);
@@ -842,6 +878,12 @@ export class Engine extends EventTarget {
 
   // Sends the live input through a track's chain (amp, EQ, effects) so you hear what you play.
   setMonitor(trackId, channel = 'left') {
+    if (this.nativeActive) {
+      const track = trackId && this.project.tracks.find(t => t.id === trackId);
+      this.monitor = track ? { trackId, channel, native: true } : null;
+      this.native.monitor(track || null, this.project, channel).catch(() => {});
+      return !!track;
+    }
     if (this.monitor) {
       try { this.monitor.tap.disconnect(this.monitor.dest); } catch { /* already gone */ }
       this.monitor = null;
@@ -857,6 +899,11 @@ export class Engine extends EventTarget {
 
   closeInput(force = false) {
     if (!force && (this.monitor || this.recording)) return;
+    if (this.native.device) {
+      this.monitor = null;
+      this.native.close();
+      return;
+    }
     this.setMonitor(null);
     this.recorderNode?.disconnect();
     this.recorderNode = null;
@@ -872,6 +919,13 @@ export class Engine extends EventTarget {
   // Records the clean (unprocessed) input; amps and effects stay adjustable afterwards.
   async startAudioRecording(deviceId, channel = 'left') {
     await this.openInput(deviceId);
+    if (this.nativeActive) {
+      // The helper records the input chosen for monitoring; set it even when not monitoring.
+      if (!this.monitor) await this.native.monitor(null, this.project, channel);
+      await this.native.startRecording();
+      this.recording = { native: true };
+      return;
+    }
     const t = this.inputTap(channel);
     const count = channel === 'stereo' ? 2 : 1;
     this.recorderNode = Tone.getContext().createAudioWorkletNode('bb-recorder', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: count, channelCountMode: 'explicit' });
@@ -884,6 +938,7 @@ export class Engine extends EventTarget {
   // Returns {buffer, startBeat} for what was captured since startAudioRecording().
   async stopAudioRecording(latencyMs = 0) {
     if (!this.recording) return null;
+    if (this.recording.native) return this.stopNativeRecording(latencyMs);
     this.recorderNode.port.postMessage({ on: false });
     await new Promise(r => setTimeout(r, 120));
     const { chunks, inputLatency } = this.recording;
@@ -912,6 +967,34 @@ export class Engine extends EventTarget {
       }
     }
     const startBeat = beatAt(this.project, secAt(this.project, this.startedAt.beat) + Math.max(0, startTime - latency - this.startedAt.time));
+    return { buffer, startBeat };
+  }
+
+  // A native take: placed by clock time (see native-audio.js) and brought to the song's sample rate.
+  async stopNativeRecording(latencyMs) {
+    const take = await this.native.stopRecording();
+    const device = this.native.device;
+    // Re-check the clocks while the device is still open, then let it go.
+    await this.native.syncClock().catch(() => {});
+    this.recording = null;
+    this.closeInput();
+    if (!take || !device || !this.startedAt) return null;
+    const raw = Tone.getContext().rawContext;
+    const heard = heardContextTime(take, device, this.native.clock, raw.getOutputTimestamp());
+    const { skip, startBeat } = placeTake(heard, this.startedAt, this.project, device.rate, latencyMs);
+    if (skip >= take.data.length) return null;
+    const data = take.data.subarray(skip);
+    let buffer = new AudioBuffer({ length: data.length, sampleRate: device.rate, numberOfChannels: 1 });
+    buffer.copyToChannel(data, 0);
+    const rate = Tone.getContext().sampleRate;
+    if (Math.abs(device.rate - rate) > 0.5) {
+      const ctx = new OfflineAudioContext(1, Math.ceil(data.length * rate / device.rate), rate);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      src.start();
+      buffer = await ctx.startRendering();
+    }
     return { buffer, startBeat };
   }
 }

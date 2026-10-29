@@ -3,7 +3,7 @@
 import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate, trackForPart, uid, barBeats, changeTimeSig, splitRegion } from './state.js';
 import { Engine, renderProject, songEnd, expandRegion, sourceSpb } from './engine/engine.js';
 import { getInstrument, isKit, loadBuffer } from './engine/instruments.js';
-import { scanPlugins, bridge } from './engine/plugins.js';
+import { scanPlugins, bridge, pluginStatus } from './engine/plugins.js';
 import { setLibrary, inspect, registerDefs, exportDefs, INSTRUMENT_FILE } from './engine/user-instruments.js';
 import { toBase64, fromBase64 } from './engine/wav.js';
 import { encodeFlac } from './engine/formats/flac.js';
@@ -89,9 +89,41 @@ class App {
   async rescanPlugins() {
     this.pluginScanText = 'Looking for plugins…';
     await scanPlugins();
+    this.configureNativeAudio();
     this.pluginScanText = '';
     this.library.render();
     this.smart?.render?.();
+  }
+
+  // The low-latency engine (monitoring and recording through the native helper) is on whenever the
+  // helper is available, unless turned off in Settings.
+  nativeAudioSettings() {
+    const s = this.settings.native || {};
+    return { type: s.type || '', input: s.input || '', output: s.output || '', buffer: s.buffer || 128 };
+  }
+
+  async configureNativeAudio() {
+    let on = pluginStatus().available && this.settings.nativeAudio !== false;
+    // Only if this helper actually has live audio (older or test helpers don't).
+    if (on && this.nativeSupported == null) {
+      try { await this.engine.native.devices(); this.nativeSupported = true; } catch { this.nativeSupported = false; }
+    }
+    on = on && this.nativeSupported;
+    this.engine.useNative(on ? this.nativeAudioSettings() : null);
+  }
+
+  // Applies changed native settings, reopening the device if it's in use.
+  async applyNativeAudio() {
+    await window.host?.setSettings(this.settings);
+    const wasOpen = !!this.engine.native.device;
+    const track = this.monitorTrack && store.track(this.monitorTrack);
+    if (wasOpen) this.engine.closeInput(true);
+    await this.configureNativeAudio();
+    if (track) {
+      this.monitorTrack = null;
+      await this.toggleMonitor(track);
+    }
+    this.refresh();
   }
 
   async addPluginFolder() {
@@ -687,6 +719,7 @@ class App {
       [['auto', `Automatic (${Math.round((window.devicePixelRatio || 1) * 100)}%)`], ['1', '100%'], ['1.25', '125%'], ['1.5', '150%'], ['1.75', '175%'], ['2', '200%'], ['2.5', '250%'], ['3', '300%']]
         .map(([v, l]) => h('option', { value: v, selected: String(s.pluginScale || 'auto') === v }, l)));
     const section = (title, ...body) => h('section', { class: 'settings-section' }, h('h3', {}, title), ...body);
+    const nativeSection = this.nativeSettingsSection(section);
     let close;
     close = modal(h('div', { class: 'settings' },
       h('h2', {}, 'Settings'),
@@ -696,6 +729,7 @@ class App {
         h('label', { class: 'field' }, h('span', {}, 'Sample rate'), rate,
           h('span', { class: 'settings-desc' }, `Your device is running at ${(deviceRate / 1000).toFixed(1)} kHz. Match your audio interface to avoid resampling.`)),
         h('h4', {}, 'Latency'), latency),
+      nativeSection,
       section('Recording',
         h('label', { class: 'field' }, h('span', {}, 'Input device'), device),
         h('label', { class: 'field inline' }, h('span', {}, 'Recording offset (ms)'), offset,
@@ -710,6 +744,48 @@ class App {
         h('div', { class: 'row', style: { gap: '8px', marginTop: '8px' } },
           h('button', { class: 'text', onclick: () => window.host?.openCredits() }, 'Sound credits'))),
       h('div', { class: 'actions' }, h('button', { class: 'text accent', onclick: () => close() }, 'Done'))));
+  }
+
+  // Settings → Low-latency engine: which audio system and devices the helper uses, and buffer size.
+  nativeSettingsSection(section) {
+    const s = this.settings;
+    if (!pluginStatus().available || this.nativeSupported === false) {
+      return section('Low-latency engine', h('div', { class: 'settings-desc' }, 'Not included in this build (it needs the native helper; see the README).'));
+    }
+    const n = s.native || (s.native = {});
+    const enabled = h('label', { class: 'check' },
+      h('input', { type: 'checkbox', checked: s.nativeAudio !== false, onchange: e => { s.nativeAudio = e.target.checked; this.applyNativeAudio(); } }),
+      'Monitor and record guitars through the low-latency engine');
+    const type = h('select', { class: 'wide-select', onchange: e => { n.type = e.target.value; n.input = ''; n.output = ''; fill(); this.applyNativeAudio(); } });
+    const input = h('select', { class: 'wide-select', onchange: e => { n.input = e.target.value; this.applyNativeAudio(); } });
+    const output = h('select', { class: 'wide-select', onchange: e => { n.output = e.target.value; this.applyNativeAudio(); } });
+    const buffer = h('select', { class: 'wide-select', onchange: e => { n.buffer = Number(e.target.value); this.applyNativeAudio().then(showLatency); } },
+      [32, 64, 128, 256, 512, 1024].map(v => h('option', { value: v, selected: (n.buffer || 128) === v }, `${v} samples (${(v / 48).toFixed(1)} ms)`)));
+    const readout = h('div', { class: 'latency-readout' });
+    const showLatency = () => {
+      const d = this.engine.native.device;
+      readout.replaceChildren(d
+        ? h('div', {}, h('span', {}, `${d.type} · ${d.buffer} samples at ${(d.rate / 1000).toFixed(1)} kHz`), h('strong', {}, `${this.engine.native.monitorLatencyMs()} ms monitoring`))
+        : h('div', {}, h('span', {}, 'Opens when you monitor or record an audio track'), h('strong', {}, '—')));
+    };
+    let types = [];
+    const fill = () => {
+      const t = types.find(x => x.type === n.type) || types[0];
+      if (!t) return;
+      type.replaceChildren(...types.map(x => h('option', { value: x.type, selected: x.type === t.type }, x.type)));
+      input.replaceChildren(h('option', { value: '' }, 'Default'), ...t.inputs.map(d => h('option', { value: d, selected: d === n.input }, d)));
+      output.replaceChildren(h('option', { value: '' }, 'Default'), ...t.outputs.map(d => h('option', { value: d, selected: d === n.output }, d)));
+    };
+    this.engine.native.devices().then(r => { types = r.types.filter(t => t.type !== 'Test' || n.type === 'Test'); fill(); }).catch(() => {});
+    showLatency();
+    return section('Low-latency engine', enabled,
+      h('div', { class: 'settings-desc' }, 'Plays your guitar\'s amp and effects through a native audio engine, so what you hear while monitoring is only a few milliseconds behind what you play. Use headphones.'),
+      h('label', { class: 'field' }, h('span', {}, 'Audio system'), type),
+      h('label', { class: 'field' }, h('span', {}, 'Input'), input),
+      h('label', { class: 'field' }, h('span', {}, 'Output'), output),
+      h('label', { class: 'field' }, h('span', {}, 'Buffer size'), buffer,
+        h('span', { class: 'settings-desc' }, 'Smaller is more immediate; raise it if you hear clicks or dropouts. With JACK (PipeWire) a new size applies after restarting Basement Band.')),
+      readout);
   }
 
   // ------------------------------------------------------------ song sections

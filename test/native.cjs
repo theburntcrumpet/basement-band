@@ -84,6 +84,45 @@ module.exports = async function native(win, app) {
     }
     return worst <= 1.5 ? 'ok worst band difference ' + worst.toFixed(2) + ' dB: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('monitoring and recording through the native engine (virtual interface)', `
+    store.dirty = false;
+    await app.newSong();
+    app.settings.native = { type: 'Test', buffer: 128 };
+    app.settings.nativeAudio = true;
+    await app.configureNativeAudio();
+    if (!app.engine.nativeSettings) return 'native engine not enabled';
+    app.countIn = false;
+    app.quickStart('guitar');
+    const t = store.selectedTrack;
+    // The virtual input's clicks last one sample: too short to open the noise gate.
+    store.update(() => { t.amp = { ...t.amp, gate: 0 }; });
+    await app.toggleMonitor(t);
+    const info = app.engine.inputInfo();
+    if (!info.native) return 'not monitoring natively: ' + JSON.stringify(info);
+    await new Promise(r => setTimeout(r, 2300));
+    const { bridge } = await import('./engine/plugins.js');
+    const { latencies } = await bridge.call('test:stats');
+    if (!latencies.length || Math.max(...latencies) > 128) return 'clicks through the chain: ' + JSON.stringify(latencies);
+    // Amp changes reach the native chain while monitoring.
+    store.update(() => { t.amp = { ...t.amp, model: 'metal', gate: 0 }; });
+    await new Promise(r => setTimeout(r, 300));
+    // Record two and a half seconds; the virtual input clicks once a second.
+    app.seek(4);
+    await app.toggleRecord();
+    await new Promise(r => setTimeout(r, 2600));
+    await app.stop();
+    const take = t.regions.find(r => r.name === 'Recording');
+    if (!take) return 'no take';
+    const buf = app.engine.audioPool.get(take.audioId);
+    const d = buf.getChannelData(0), clicks = [];
+    for (let i = 0; i < d.length; i++) if (d[i] > 0.4) clicks.push(i);
+    const spacing = clicks.slice(1).map((c, i) => c - clicks[i]);
+    if (clicks.length < 2 || spacing.some(x => Math.abs(x - buf.sampleRate) > 1)) return 'clicks ' + clicks + ' rate ' + buf.sampleRate;
+    if (!(take.start >= 4 && take.start < 4.5)) return 'take starts at beat ' + take.start;
+    const stillMonitoring = app.monitorTrack === t.id;
+    app.stopMonitoring();
+    return 'ok monitoring ' + info.monitorLatencyMs + ' ms (chain ' + Math.max(...latencies) + ' frames), take ' + buf.duration.toFixed(2) + ' s at beat ' + take.start.toFixed(3) + ', clicks exactly 1 s apart' + (stillMonitoring ? ', still monitoring after recording' : '');`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

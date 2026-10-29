@@ -62,8 +62,9 @@ async function scanPlugins(folders = [], onProgress = () => {}) {
 
 // The long-running helper that renders audio for the song's plugin instruments.
 class HostProcess {
-  constructor(send) {
+  constructor(send, env = {}) {
     this.send = send;    // (message) => void, to the renderer
+    this.env = env;
     this.proc = null;
   }
 
@@ -71,7 +72,7 @@ class HostProcess {
     if (this.proc) return true;
     let proc;
     try {
-      proc = spawn(helperPath(), [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
+      proc = spawn(helperPath(), [], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true, env: { ...process.env, ...this.env } });
     } catch {
       return false;
     }
@@ -86,8 +87,8 @@ class HostProcess {
         const body = pending.subarray(5, 4 + len);
         if (type === 'J') {
           try { this.send({ type: 'J', json: JSON.parse(body.toString('utf8')) }); } catch { /* ignore */ }
-        } else if (type === 'A') {
-          this.send({ type: 'A', data: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) });
+        } else if (type === 'A' || type === 'I') {
+          this.send({ type, data: body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) });
         }
         pending = pending.subarray(4 + len);
       }

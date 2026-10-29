@@ -88,16 +88,20 @@ export class SmartControls {
   inputSection(track) {
     const app = this.app;
     const monitoring = app.monitorTrack === track.id;
-    const device = h('select', { class: 'wide-select', onchange: e => app.setInputDevice(e.target.value) },
-      h('option', { value: '' }, 'Default input'));
-    navigator.mediaDevices?.enumerateDevices().then(list => {
+    // With the low-latency engine the interface is chosen in Settings (it's the native device).
+    const native = !!app.engine.nativeSettings;
+    const device = native
+      ? h('button', { class: 'text', title: 'Choose the audio system and interface', onclick: () => app.openSettings() },
+        `⚡ ${app.engine.native.device?.input || app.nativeAudioSettings().input || 'Default'} (low latency)…`)
+      : h('select', { class: 'wide-select', onchange: e => app.setInputDevice(e.target.value) }, h('option', { value: '' }, 'Default input'));
+    if (!native) navigator.mediaDevices?.enumerateDevices().then(list => {
       for (const d of list.filter(x => x.kind === 'audioinput' && x.deviceId !== 'default')) {
         device.append(h('option', { value: d.deviceId, selected: d.deviceId === app.settings.inputDevice }, d.label || 'Audio input'));
       }
     });
     const channel = track.input?.channel || 'left';
     const channels = h('select', { class: 'wide-select', onchange: e => app.setInputChannel(track, e.target.value) },
-      [['left', 'Input 1 (mono)'], ['right', 'Input 2 (mono)'], ['stereo', 'Inputs 1+2 (stereo)']].map(([v, l]) => h('option', { value: v, selected: v === channel }, l)));
+      [['left', 'Input 1 (mono)'], ['right', 'Input 2 (mono)'], ['stereo', native ? 'Inputs 1+2 (mixed to mono)' : 'Inputs 1+2 (stereo)']].map(([v, l]) => h('option', { value: v, selected: v === channel }, l)));
     const info = app.engine.inputInfo();
     return h('div', { class: 'input-panel' },
       h('h3', {}, 'Input'),
@@ -106,7 +110,7 @@ export class SmartControls {
       h('div', { class: 'monitor-row' },
         h('button', { class: 'text' + (monitoring ? ' accent' : ''), onclick: () => app.toggleMonitor(track) }, monitoring ? '🎧 Monitoring' : '🎧 Monitor'),
         h('canvas', { id: 'input-meter', width: 120, height: 10, title: 'Input level — keep the peaks out of the red' })),
-      h('div', { class: 'monitor-row' },
+      native ? null : h('div', { class: 'monitor-row' },
         h('span', { class: 'settings-desc' }, `Audio mode: ${{ low: 'Low latency', balanced: 'Balanced', stable: 'Stable' }[app.bootAudioMode] || 'Balanced'}`),
         h('button', { class: 'text small-text', onclick: () => app.openSettings() }, 'Change…')),
       h('div', { class: 'lib-note', style: { padding: '6px 0 0' } },

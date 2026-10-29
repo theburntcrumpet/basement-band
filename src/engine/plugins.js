@@ -129,6 +129,13 @@ class Bridge extends EventTarget {
       } else if (j.event) {
         this.dispatchEvent(new CustomEvent(j.event, { detail: j }));
       }
+    } else if (m.type === 'I') {
+      // Recorded input from the live-audio engine: i64 first frame, f64 clock time, f64 its frame, f32 samples.
+      const ab = m.data instanceof ArrayBuffer ? m.data : m.data.buffer.slice(m.data.byteOffset, m.data.byteOffset + m.data.byteLength);
+      const v = new DataView(ab);
+      this.dispatchEvent(new CustomEvent('input', { detail: {
+        first: Number(v.getBigInt64(0, true)), frameTime: v.getFloat64(8, true), frame: v.getFloat64(16, true), data: new Float32Array(ab.slice(24)),
+      } }));
     } else if (m.type === 'exit') {
       for (const w of this.waiting.values()) w.reject(new Error('The plugin helper stopped'));
       this.waiting.clear();

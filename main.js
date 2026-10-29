@@ -257,7 +257,9 @@ function registerIpc(win) {
 
   // ---- plugins (VST3, and LV2 on Linux, via the native helper)
   const send = m => { if (!win.isDestroyed()) win.webContents.send('plugin:msg', m); };
-  pluginHost = new plugins.HostProcess(send);
+  // PipeWire's JACK layer takes its buffer size from the client's environment (read once at start).
+  const nativeBuffer = Number(bootSettings.native?.buffer) || 128;
+  pluginHost = new plugins.HostProcess(send, process.platform === 'linux' ? { PIPEWIRE_LATENCY: `${nativeBuffer}/48000` } : {});
   ipcMain.handle('plugins:scan', async () => {
     const s = await loadSettings();
     return plugins.scanPlugins(s.pluginFolders || [], p => send({ type: 'progress', ...p }));

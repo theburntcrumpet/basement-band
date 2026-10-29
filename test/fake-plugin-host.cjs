@@ -58,6 +58,8 @@ function command(m) {
   if (m.cmd === 'show') { if (s) s.state.gain = 0.5; return reply(); }
   if (m.cmd === 'getState') return reply({ state: Buffer.from(JSON.stringify(s?.state || {})).toString('base64') });
   if (m.cmd === 'crash') process.exit(3);
+  // No native live audio here: the app falls back to its own input path.
+  if (/^(audio|monitor|record):/.test(m.cmd)) return json({ req: m.req, ok: false, error: 'not supported by the test helper' });
   return reply();
 }
 
