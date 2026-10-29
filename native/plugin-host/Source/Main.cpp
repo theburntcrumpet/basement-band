@@ -591,6 +591,7 @@ private:
                 {
                     // An offline render in a separate engine, sharing the uploaded samples.
                     bb::SongEngine offline (l.samples);
+                    offline.irs = l.song.irs;
                     offline.plugins = [this] (int id) -> std::shared_ptr<bb::PluginSource> {
                         auto inst = find ((uint32_t) id);
                         return inst ? std::make_shared<PluginLink> (inst, true) : nullptr;

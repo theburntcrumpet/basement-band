@@ -904,6 +904,16 @@ private:
 // A track: its notes, instrument and mixer chain.
 struct SongNote { double beat, lengthBeats; int midi; float velocity; };
 
+// One pass of an audio clip (engine.js audioSegments()): plays from `offset` seconds into the
+// (already time-stretched) audio for `seconds`, starting at `beat`; `spb` converts beats into it.
+struct ClipSegment
+{
+    double beat, lengthBeats;
+    std::shared_ptr<Sample> sample;
+    double offset, seconds, spb;
+    float gain;
+};
+
 class TrackPlayer
 {
 public:
@@ -911,13 +921,37 @@ public:
     std::unique_ptr<Instrument> instrument;
     String instrumentKey;                  // rebuild the instrument when this changes
     std::shared_ptr<const std::vector<SongNote>> notes;   // sorted by beat
+    std::shared_ptr<const std::vector<ClipSegment>> clips;  // sorted by beat
+    VoicePool clipVoices;
+    double rate = 48000;
+
+    // Starts a clip segment `skipSeconds` in, at `offset` in the block (Tone.ToneBufferSource:
+    // linear 3 ms fade in, or 5 ms when starting partway; 10 ms fade out after its length).
+    void startClip (const ClipSegment& c, double skipSeconds, int offset)
+    {
+        if (skipSeconds >= c.seconds - 0.001) return;
+        auto& v = clipVoices.take();
+        v.sample = c.sample;
+        v.step = c.sample->rate / rate;
+        v.pos = (c.offset + skipSeconds) * c.sample->rate;
+        v.delay = offset;
+        v.midi = -1;
+        v.gain = 1;
+        v.env.start (c.gain, skipSeconds > 0 ? 0.005 : 0.003, 0.01, rate, false);
+        v.env.stop ((int64) std::llround ((c.seconds - skipSeconds) * rate));
+        v.endAt = -1;
+    }
+
+    void stopClips (int offset) { for (auto& v : clipVoices.voices) if (v.active) v.env.stop (offset - v.delay); }
     TrackChain chain;
     TrackSettings settings;
+    const AudioBuffer<float>* ir = nullptr;
     bool settingsChanged = true;
     float peak = 0;
 
-    void prepare (double rate, int block)
+    void prepare (double sampleRate, int block)
     {
+        rate = sampleRate;
         chain.prepare (rate, block);
         if (instrument) instrument->prepare (rate, block);
         mixL.setSize (1, block); mixR.setSize (1, block); mono.setSize (1, block);
@@ -927,13 +961,14 @@ public:
     // Renders the instrument and runs the chain, adding to out and the send buses.
     void render (int n, float* outL, float* outR, float* revL, float* revR, float* echoL, float* echoR)
     {
-        if (settingsChanged) { chain.configure (settings, nullptr); settingsChanged = false; }
+        if (settingsChanged) { chain.configure (settings, ir); settingsChanged = false; }
         auto* l = mixL.getWritePointer (0);
         auto* r = mixR.getWritePointer (0);
         auto* m = mono.getWritePointer (0);
         FloatVectorOperations::clear (l, n);
         FloatVectorOperations::clear (r, n);
         if (instrument) instrument->render (l, r, n);
+        clipVoices.render (l, r, n);
         // Tone.Channel's panner takes one channel: the track is mixed to mono before it's panned.
         for (int i = 0; i < n; ++i) m[i] = 0.5f * (l[i] + r[i]);
         // The meter reads the channel output (post fader).
@@ -995,6 +1030,8 @@ public:
 
     // How plugin tracks find the plugin instances the helper has loaded.
     PluginResolver plugins;
+    // Cabinet impulse responses by path (decoded by the helper).
+    std::function<const AudioBuffer<float>* (const String&)> irs;
 
     void prepare (double sampleRate, int maxBlock)
     {
@@ -1019,7 +1056,7 @@ public:
             const ScopedLock l (lock);
             for (auto& t : tracks) existing[t->id] = t;
         }
-        struct Change { std::shared_ptr<TrackPlayer> track; std::unique_ptr<Instrument> instrument; String key; bool newInstrument; TrackSettings settings; std::shared_ptr<const std::vector<SongNote>> notes; };
+        struct Change { std::shared_ptr<TrackPlayer> track; std::unique_ptr<Instrument> instrument; String key; bool newInstrument; TrackSettings settings; std::shared_ptr<const std::vector<SongNote>> notes; std::shared_ptr<const std::vector<ClipSegment>> clips; const AudioBuffer<float>* ir = nullptr; };
         std::vector<Change> changes;
         if (auto* arr = song["tracks"].getArray())
             for (auto& tv : *arr)
@@ -1032,7 +1069,8 @@ public:
                     track->id = id;
                     track->prepare (rate, block);
                 }
-                Change c { track, nullptr, {}, false, parseSettings (tv), parseNotes (tv["notes"]) };
+                Change c { track, nullptr, {}, false, parseTrackSettings (tv), parseNotes (tv["notes"]), parseClips (tv["clips"]) };
+                c.ir = c.settings.amp.cab == "ir" && irs ? irs (c.settings.amp.irPath) : nullptr;
                 const var inst = tv["instrument"];
                 c.key = JSON::toString (inst, true);
                 if (c.key != track->instrumentKey)
@@ -1053,6 +1091,8 @@ public:
             c.track->settings = c.settings;
             c.track->settingsChanged = true;
             c.track->notes = c.notes;
+            c.track->clips = c.clips;
+            c.track->ir = c.ir;
         }
         cycleOn = (bool) song["cycle"].getProperty ("on", false);
         cycleStart = (double) song["cycle"].getProperty ("start", 0.0);
@@ -1071,6 +1111,7 @@ public:
     {
         const ScopedLock l (lock);
         position = beat;
+        resumeClips = true;   // clips already under way at `beat` pick up partway
         waitSamples = std::max<int64> (0, delaySamples);
         countInClicks = countIn;
         countInSamples = 0;
@@ -1081,10 +1122,16 @@ public:
     {
         const ScopedLock l (lock);
         playing = false;
-        for (auto& t : tracks) if (t->instrument) t->instrument->allNotesOff (0);
+        for (auto& t : tracks) { if (t->instrument) t->instrument->allNotesOff (0); t->stopClips (0); }
     }
 
-    void seek (double beat) { const ScopedLock l (lock); position = beat; }
+    void seek (double beat)
+    {
+        const ScopedLock l (lock);
+        position = beat;
+        for (auto& t : tracks) t->stopClips (0);
+        resumeClips = true;
+    }
 
     // Notes played live (keyboard, MIDI), from any thread; applied at the start of the next block.
     void liveNote (const String& trackId, int midi, float velocity, bool on)
@@ -1176,6 +1223,7 @@ private:
     Click click;
     AudioBuffer<float> bus;
 
+    bool resumeClips = false;
     bool playing = false, countInClicks = false, cycleOn = false, metronome = false, meterCompound = false, masterChanged = true;
     double position = 0, cycleStart = 0, cycleEnd = 4, meterPulse = 1;
     int meterNum = 4;
@@ -1244,17 +1292,38 @@ private:
                 endBeat = cycleEnd;
                 wrap = true;
             }
+            if (resumeClips) { resumeClipsAt (position, done); resumeClips = false; }
             queue (position, endBeat, done, secStart);
             position = endBeat;
             done += segment;
-            if (wrap) position = cycleStart;
+            if (wrap)
+            {
+                // Back to the cycle start: what was playing stops (with its short fade) and clips that
+                // span the start resume partway, as on the app's cycle repeats.
+                position = cycleStart;
+                for (auto& t : tracks) t->stopClips (jmin (done, n - 1));
+                resumeClips = true;
+            }
             if (segment == 0 && ! wrap) break;
         }
+    }
+
+    // Clips already under way at `beat` start partway through.
+    void resumeClipsAt (double beat, int offset)
+    {
+        for (auto& t : tracks)
+            if (t->clips)
+                for (auto& c : *t->clips)
+                    if (c.beat < beat - 1e-9 && c.beat + c.lengthBeats > beat + 1e-9) t->startClip (c, (beat - c.beat) * c.spb, offset);
     }
 
     void queue (double from, double to, int baseOffset, double secFrom)
     {
         const auto offsetOf = [&] (double beat) { return baseOffset + (int) std::llround ((tempo.secAt (beat) - secFrom) * rate); };
+        for (auto& t : tracks)
+            if (t->clips)
+                for (auto& c : *t->clips)
+                    if (c.beat >= from - 1e-9 && c.beat < to - 1e-9) t->startClip (c, 0, jmax (0, offsetOf (c.beat)));
         for (auto& t : tracks)
         {
             if (! t->instrument || ! t->notes) continue;
@@ -1279,15 +1348,16 @@ private:
         }
     }
 
-    static TrackSettings parseSettings (const var& t)
+
+    std::shared_ptr<const std::vector<ClipSegment>> parseClips (const var& v)
     {
-        TrackSettings s;
-        auto num = [&] (const var& o, const char* k, float def) { return o.hasProperty (k) ? (float) (double) o[k] : def; };
-        s.eqLow = num (t, "eqLow", 0); s.eqMid = num (t, "eqMid", 0); s.eqHigh = num (t, "eqHigh", 0);
-        s.tone = num (t, "tone", 1); s.drive = num (t, "drive", 0); s.volumeDb = num (t, "volume", -4);
-        s.pan = num (t, "pan", 0); s.reverb = num (t, "reverb", 0); s.echo = num (t, "echo", 0);
-        s.mute = (bool) t.getProperty ("mute", false);
-        return s;
+        auto clips = std::make_shared<std::vector<ClipSegment>>();
+        if (auto* a = v.getArray())
+            for (auto& c : *a)
+                if (auto s = pool.get (c["sample"].toString()))
+                    clips->push_back ({ (double) c["beat"], (double) c["length"], s, (double) c["offset"], (double) c["seconds"], (double) c["spb"], (float) (double) c.getProperty ("gain", 1.0) });
+        std::stable_sort (clips->begin(), clips->end(), [] (auto& a, auto& b) { return a.beat < b.beat; });
+        return clips;
     }
 
     static std::shared_ptr<const std::vector<SongNote>> parseNotes (const var& v)

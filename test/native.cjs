@@ -310,6 +310,51 @@ module.exports = async function native(win, app) {
     const peak = Math.max(...b);
     return max <= 1.5 && peak > -40 ? 'ok Dexed through the native song engine matches within ' + max.toFixed(1) + ' dB (peak ' + peak.toFixed(1) + ' dB)' : 'difference ' + max.toFixed(1) + ' dB, native peak ' + peak.toFixed(1);`);
 
+  await check('native song engine matches the app: audio clips', `
+    const { renderProject } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const { defaultAmp } = await import('./engine/amp.js');
+    const rate = Tone.getContext().sampleRate;
+    // A plucked DI note every half second (1.5 s of audio).
+    const n = Math.round(rate * 1.5), di = new AudioBuffer({ length: n, sampleRate: rate, numberOfChannels: 1 });
+    const d = di.getChannelData(0);
+    for (let i = 0; i < n; i++) { const t = (i / rate) % 0.5; let v = 0; for (let k = 1; k <= 6; k++) v += Math.sin(2 * Math.PI * 110 * k * i / rate) / k; d[i] = 0.3 * v * Math.exp(-t * 6); }
+    const loudness = (b, len) => { const out = []; const l = b.getChannelData(0), r = b.getChannelData(1); for (let w = 0; w + 2400 <= len; w += 2400) { let e = 0; for (let i = w; i < w + 2400; i++) { const m = 0.5 * (l[i] + r[i]); e += m * m; } out.push(10 * Math.log10(e / 2400 + 1e-18)); } return out; };
+    const cases = [
+      ['DI through a crunch amp', { amp: { ...defaultAmp('crunch'), gate: 0 } }, { start: 0, length: 4 }, {}, 0],
+      ['looped and extended with silence', {}, { start: 1, length: 6, loopLength: 4 }, {}, 0],
+      ['following a tempo change (stretched)', {}, { start: 0, length: 4, bpm: 90 }, {}, 0],
+      ['starting playback partway into a clip', { reverb: 0.2 }, { start: 0, length: 4 }, {}, 1.3],
+    ];
+    const report = [];
+    let worst = 0;
+    for (const [name, trackSettings, region, , from] of cases) {
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack('audio', null, 'Gtr'), { reverb: 0, echo: 0, ...trackSettings });
+      t.regions.push({ id: 'r', offset: 0, audioId: 'di', ...region });
+      p.tracks.push(t);
+      app.engine.audioPool.set('di', di);
+      app.engine.project = p;
+      await app.engine.prepareAudio(p);
+      const web = await renderProject(p, app.engine.audioPool, { start: from, end: 8, tail: 0.5, sampleRate: rate, bufferFor: app.engine.bufferFor });
+      const song = songForNative(p, new Map(), { bufferFor: app.engine.bufferFor });
+      if (!song.tracks[0]?.clips?.length) return name + ': no clips';
+      await new Promise(r => setTimeout(r, 300));
+      const nat = await renderNative(song, { start: from, end: 8, tail: 0.5, sampleRate: rate });
+      const len = Math.min(web.length, nat.length);
+      const a = loudness(web, len), b = loudness(nat, len);
+      // Windows 25 dB or more below the notes (e.g. the amp's ringing after a clip ends) don't count.
+      const diffs = a.map((v, i) => (Math.max(v, b[i]) > -40 ? Math.abs(v - b[i]) : 0));
+      const max = Math.max(...diffs);
+      const wet = (trackSettings.reverb || 0) > 0;
+      worst = Math.max(worst, wet ? max / 3 : max);
+      const where = diffs.map((x, i) => (x > 1 ? (i * 0.05).toFixed(2) + 's ' + a[i].toFixed(1) + '/' + b[i].toFixed(1) : null)).filter(Boolean).slice(0, 4).join(', ');
+      report.push(name + ' ' + max.toFixed(1) + ' dB' + (where ? ' at ' + where : ''));
+    }
+    app.engine.project = store.project;
+    return worst <= 1.5 ? 'ok loudness per 50 ms: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

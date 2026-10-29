@@ -6,7 +6,8 @@ import { bridge } from './plugins.js';
 import { getInstrument, nativeParts } from './instruments.js';
 import { noteToMidi } from '../music/theory.js';
 import { meter } from '../music/meter.js';
-import { expandRegion, isMuted } from './engine.js';
+import { expandRegion, isMuted, audioSegments } from './engine.js';
+import { bpmAt } from '../music/tempo.js';
 
 // ------------------------------------------------------------------ samples
 
@@ -76,8 +77,28 @@ export function nativeInstrument(id, buffers, plugin = null) {
 
 // ------------------------------------------------------------------ the song
 
+// An audio track's clips as segments (the same maths as scheduleProject): where each pass starts,
+// how far into the (stretched) audio, and for how long.
+function clipsFor(project, track, bufferFor) {
+  const out = [];
+  for (const region of track.regions) {
+    const { buffer, factor } = bufferFor(region);
+    if (!buffer) continue;
+    const spb = 60 / bpmAt(project, region.start);
+    const sample = upload(buffer);
+    for (const seg of audioSegments(region)) {
+      const offset = (region.offset || 0) * factor + seg.into * spb;
+      const seconds = Math.min(seg.length * spb, buffer.duration - offset);
+      if (seconds <= 0.001) continue;
+      out.push({ beat: seg.at, length: seg.length, sample, offset, seconds, spb, gain: Math.pow(10, (region.gain ?? 0) / 20) });
+    }
+  }
+  return out;
+}
+
 // project + each track's loaded instrument {id, buffers} -> the song the helper plays.
-export function songForNative(project, instruments, { metronome = false } = {}) {
+//   bufferFor: region -> {buffer, factor}, the audio a clip plays (time-stretched to the tempo)
+export function songForNative(project, instruments, { metronome = false, bufferFor = null } = {}) {
   const m = meter(project.timeSig);
   return {
     bpm: project.bpm,
@@ -86,15 +107,18 @@ export function songForNative(project, instruments, { metronome = false } = {}) 
     masterVolume: project.masterVolume ?? 0,
     metronome,
     meter: { num: m.num, pulse: m.pulse, compound: m.compound },
-    tracks: project.tracks.filter(t => t.type !== 'audio').map(t => {
+    tracks: project.tracks.filter(t => t.type !== 'audio' || bufferFor).map(t => {
       const loaded = instruments.get(t.id);
+      const audio = t.type === 'audio';
       return {
+        amp: t.amp || null,
         id: t.id,
         volume: t.volume ?? -4, pan: t.pan ?? 0, tone: t.tone ?? 1, drive: t.drive || 0,
         reverb: t.reverb || 0, echo: t.echo || 0, eqLow: t.eqLow || 0, eqMid: t.eqMid || 0, eqHigh: t.eqHigh || 0,
         mute: isMuted(project, t),
-        instrument: loaded ? nativeInstrument(loaded.id, loaded.buffers, loaded.plugin) : null,
-        notes: t.regions.flatMap(r => expandRegion(r)).map(n => [n.t, n.d, n.n, n.v]),
+        instrument: !audio && loaded ? nativeInstrument(loaded.id, loaded.buffers, loaded.plugin) : null,
+        notes: audio ? [] : t.regions.flatMap(r => expandRegion(r)).map(n => [n.t, n.d, n.n, n.v]),
+        clips: audio ? clipsFor(project, t, bufferFor) : [],
       };
     }),
   };

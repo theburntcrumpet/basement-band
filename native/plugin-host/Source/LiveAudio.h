@@ -144,12 +144,16 @@ public:
         if (SystemStats::getEnvironmentVariable ("BB_TEST_AUDIO", {}).isNotEmpty())
             devices.addAudioDeviceType (std::make_unique<TestDeviceType>());
         formats.registerBasicFormats();
+        song.irs = [this] (const String& path) { return loadIr (path); };
     }
 
     ~LiveAudio() override { close(); }
 
     SamplePool samples;
     SongEngine song { samples };
+
+    // Cabinet impulse responses, decoded once (mono: the first channel). Message thread only.
+    const AudioBuffer<float>* impulseResponse (const String& path) { return loadIr (path); }
 
     //==============================================================================
     var listDevices()
@@ -246,7 +250,7 @@ public:
     // Monitoring settings: {on, input: left|right|stereo, track: {...}, bpm, masterVolume}.
     void setMonitor (const var& m)
     {
-        auto settings = parseTrack (m["track"]);
+        auto settings = parseTrackSettings (m["track"]);
         const AudioBuffer<float>* ir = settings.amp.cab == "ir" ? loadIr (settings.amp.irPath) : nullptr;
         const ScopedLock l (pendingLock);
         pending = settings;
@@ -303,7 +307,7 @@ public:
         chain.prepare (sr, block);
         sends.prepare (sr, block);
         master.prepare (sr);
-        auto settings = owner.parseTrack (m["track"]);
+        auto settings = parseTrackSettings (m["track"]);
         const AudioBuffer<float>* ir = settings.amp.cab == "ir" ? owner.loadIr (settings.amp.irPath) : nullptr;
         chain.configure (settings, ir);
         sends.setTempo ((double) m.getProperty ("bpm", 120.0));
@@ -358,29 +362,6 @@ private:
 
     static var toVar (const StringArray& a) { Array<var> v; for (auto& s : a) v.add (s); return v; }
     template <typename T> static var toVar (const Array<T>& a) { Array<var> v; for (auto x : a) v.add (x); return v; }
-
-    TrackSettings parseTrack (const var& t)
-    {
-        TrackSettings s;
-        auto num = [&] (const var& o, const char* k, float def) { return o.hasProperty (k) ? (float) (double) o[k] : def; };
-        s.eqLow = num (t, "eqLow", 0); s.eqMid = num (t, "eqMid", 0); s.eqHigh = num (t, "eqHigh", 0);
-        s.tone = num (t, "tone", 1); s.drive = num (t, "drive", 0); s.volumeDb = num (t, "volume", -4);
-        s.pan = num (t, "pan", 0); s.reverb = num (t, "reverb", 0); s.echo = num (t, "echo", 0);
-        s.mute = (bool) t.getProperty ("mute", false);
-        const var a = t["amp"];
-        if (a.isObject())
-        {
-            s.amp.model = a.getProperty ("model", "off").toString();
-            const var cab = a["cab"];
-            s.amp.cab = cab.isBool() ? ((bool) cab ? String() : String ("off")) : cab.toString();
-            s.amp.irPath = a["ir"].isObject() ? a["ir"]["path"].toString() : String();
-            s.amp.gain = num (a, "gain", 0.5f); s.amp.bass = num (a, "bass", 0.5f); s.amp.mid = num (a, "mid", 0.5f);
-            s.amp.treble = num (a, "treble", 0.5f); s.amp.presence = num (a, "presence", 0.5f);
-            s.amp.gate = num (a, "gate", 0.3f); s.amp.level = num (a, "level", 0.5f);
-            s.amp.sustain = num (a, "sustain", -1.0f);
-        }
-        return s;
-    }
 
     // Cabinet impulse responses, decoded once (mono: the first channel).
     const AudioBuffer<float>* loadIr (const String& path)
