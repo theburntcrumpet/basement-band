@@ -5,6 +5,7 @@ import { AUTO_PARAMS, AUTO_PARAM, curve, valueAt, staticValue, normalize } from 
 import { store, uid, TRACK_COLORS, resizeRegion } from '../state.js';
 import { meter } from '../music/meter.js';
 import { getInstrument } from '../engine/instruments.js';
+import { sourceSpb } from '../engine/engine.js';
 import { peaks } from '../engine/wav.js';
 
 const HEADER_W = 230;
@@ -231,7 +232,7 @@ export class Arrange {
     if (track.type === 'audio') {
       const buf = this.app.engine.audioPool.get(region.audioId);
       if (!buf) return;
-      const spb = 60 / store.project.bpm;
+      const spb = sourceSpb(region, store.project); // the recording's own seconds per beat
       const loop = region.loopLength || region.length;
       const phase = region.phase || 0;
       const map = peakMap(buf);

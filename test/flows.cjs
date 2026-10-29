@@ -754,6 +754,40 @@ module.exports = async function flows(win, app) {
     const count = n => heard.filter(x => x === n).length;
     return count(60) >= 2 && count(62) >= 2 && count(67) >= 2 ? 'ok heard ' + heard.join(',') : 'heard ' + heard.join(',');`);
 
+  await check('audio follows tempo changes (time-stretch)', `
+    store.dirty = false;
+    await app.newSong();
+    store.update(p => { p.bpm = 120; });
+    // A click on each of 8 beats at 120 bpm (0.5 s apart).
+    const rate = 44100;
+    const clip = new AudioBuffer({ length: rate * 4, sampleRate: rate, numberOfChannels: 1 });
+    for (let b = 0; b < 8; b++) { const i = Math.round(b * 0.5 * rate); for (let k = 0; k < 400; k++) clip.getChannelData(0)[i + k] = Math.sin(k * 0.25) * 0.8 * (1 - k / 400); }
+    app.addAudioBuffer(clip, 'Clicks', null, 0);
+    const t = store.project.tracks.find(x => x.type === 'audio'), r = t.regions[0];
+    if (r.bpm !== 120) return 'region bpm ' + r.bpm;
+    store.update(p => { p.bpm = 90; });
+    const { renderProject } = await import('./engine/engine.js');
+    await app.engine.prepareAudio(store.project);
+    const render = () => renderProject(store.project, app.engine.audioPool, { start: 0, end: 8, tail: 0.2, bufferFor: app.engine.bufferFor });
+    // Where each click lands (strongest peak near each expected time).
+    const clickAt = (buf, sec) => { const d = buf.getChannelData(0), sr = buf.sampleRate; let m = 0, w = 0; for (let i = Math.max(0, Math.round((sec - 0.12) * sr)); i < Math.round((sec + 0.12) * sr); i++) if (Math.abs(d[i]) > m) { m = Math.abs(d[i]); w = i; } return { sec: w / sr, peak: m }; };
+    const stretched = await render();
+    const spb90 = 60 / 90;
+    const errs = [1, 2, 3, 4, 5, 6, 7].map(b => { const c = clickAt(stretched, b * spb90); return { off: Math.abs(c.sec - b * spb90), peak: c.peak }; });
+    if (errs.some(e => e.off > 0.03 || e.peak < 0.1)) return 'stretched clicks ' + JSON.stringify(errs.map(e => [e.off.toFixed(3), e.peak.toFixed(2)]));
+    if (Math.abs(r.length - 8) > 1e-6) return 'region length changed ' + r.length;
+    // Follow tempo off: clicks keep their original 0.5 s spacing.
+    store.update(() => { r.followTempo = false; });
+    const fixed = await render();
+    const fixedErr = [1, 2, 3].map(b => Math.abs(clickAt(fixed, b * 0.5).sec - b * 0.5));
+    if (fixedErr.some(e => e > 0.01)) return 'unstretched clicks ' + fixedErr;
+    store.update(() => { r.followTempo = true; });
+    // Live playback uses the stretched clip.
+    await app.togglePlay();
+    const used = app.engine.bufferFor(r);
+    await app.stop();
+    return used.factor > 1.3 ? 'ok clicks on every 90 bpm beat (max error ' + Math.max(...errs.map(e => e.off * 1000)).toFixed(1) + ' ms), factor ' + used.factor.toFixed(3) : 'live factor ' + used.factor;`);
+
   await check('piano roll follows the selected track and region', `
     store.dirty = false;
     await app.newSong();

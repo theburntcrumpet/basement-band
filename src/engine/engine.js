@@ -184,6 +184,17 @@ export function expandRegion(region) {
   return out;
 }
 
+// Tempo-following audio: a clip remembers the tempo it was recorded/imported at (region.bpm) and is
+// time-stretched to the song's tempo unless Follow tempo is off. Offsets stay in the recording's own
+// seconds; one beat of the clip lasts sourceSpb seconds of the original recording.
+export function stretchFactor(region, project) {
+  return region.followTempo !== false && region.bpm ? region.bpm / project.bpm : 1;
+}
+
+export function sourceSpb(region, project) {
+  return 60 / (region.followTempo !== false && region.bpm ? region.bpm : project.bpm);
+}
+
 // Where an audio region's content plays: one segment per loop pass. Each pass starts `phase` beats
 // into the content (non-zero after splitting a looped clip) and anything past the end of the
 // recording is silence, so clips can be stretched to fill whole bars.
@@ -244,7 +255,8 @@ function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat
 //               repeats only, so notes there aren't lost on the next pass.
 //   isRepeat:   () => true once the transport has wrapped round the cycle since this schedule
 //   active:     a Set collecting live audio sources, so they can be stopped
-export function scheduleProject(transport, project, nodes, audioPool, { from = 0, restartAt = from, cycle = null, isRepeat = () => false, active = null } = {}) {
+//   bufferFor:  region => {buffer, factor}: the audio to play (stretched to tempo) and its stretch factor
+export function scheduleProject(transport, project, nodes, audioPool, { from = 0, restartAt = from, cycle = null, isRepeat = () => false, active = null, bufferFor = null } = {}) {
   const spb = 60 / project.bpm;
   const inCycleBefore = t => !!cycle && t >= cycle.start - 1e-9 && t < Math.min(from, cycle.end) - 1e-9;
   const onRepeat = fn => once(t => { if (isRepeat()) fn(t); });
@@ -254,12 +266,13 @@ export function scheduleProject(transport, project, nodes, audioPool, { from = 0
     scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat, inCycleBefore });
     for (const region of track.regions) {
       if (track.type === 'audio') {
-        const buffer = audioPool.get(region.audioId);
+        const { buffer, factor } = bufferFor ? bufferFor(region) : { buffer: audioPool.get(region.audioId), factor: 1 };
         if (!buffer) continue;
         // One-shot sources at exact transport times (Tone's synced Player could start a clip twice).
         const ctx = node.input.context;
         for (const seg of audioSegments(region)) {
-          const offset = (region.offset || 0) + seg.into * spb;
+          // Offsets are in the original recording's seconds; the buffer is already stretched to tempo.
+          const offset = (region.offset || 0) * factor + seg.into * spb;
           const dur = Math.min(seg.length * spb, buffer.duration - offset);
           if (dur <= 0.001) continue;
           const play = (time, skip) => {
@@ -297,6 +310,8 @@ export class Engine extends EventTarget {
   constructor() {
     super();
     this.nodes = new Map();
+    this.stretched = new Map();   // "audioId@factor" -> Promise<AudioBuffer>
+    this.stretchedReady = new Map();
     this.audioPool = new Map();
     this.pending = new Map();
     this.audioSources = new Set();
@@ -403,6 +418,63 @@ export class Engine extends EventTarget {
   }
 
   // Schedules everything from `from` (the playback start, or the current position for edits while playing).
+  // ---------------------------------------------------------------- tempo-following audio
+
+  stretchKey(region, factor) {
+    return `${region.audioId}@${factor.toFixed(5)}`;
+  }
+
+  // The audio a region should play at the current tempo (falls back to the original if a stretch
+  // isn't ready yet — callers await prepareAudio() first).
+  bufferFor = region => {
+    const buffer = this.audioPool.get(region.audioId);
+    const factor = stretchFactor(region, this.project);
+    if (!buffer || Math.abs(factor - 1) < 1e-4) return { buffer, factor: 1 };
+    const ready = this.stretchedReady.get(this.stretchKey(region, factor));
+    return ready ? { buffer: ready, factor } : { buffer, factor: 1 };
+  };
+
+  // Stretches every tempo-following clip to the song's tempo (in a worker), once per tempo.
+  prepareAudio(project = this.project) {
+    const jobs = [];
+    for (const t of project.tracks) {
+      if (t.type !== 'audio') continue;
+      for (const r of t.regions) {
+        const buffer = this.audioPool.get(r.audioId);
+        const factor = stretchFactor(r, project);
+        if (!buffer || Math.abs(factor - 1) < 1e-4) continue;
+        const key = this.stretchKey(r, factor);
+        if (!this.stretched.has(key)) {
+          const job = this.stretchInWorker(buffer, factor).then(b => { this.stretchedReady.set(key, b); return b; });
+          job.catch(() => this.stretched.delete(key));
+          this.stretched.set(key, job);
+        }
+        jobs.push(this.stretched.get(key));
+      }
+    }
+    return Promise.all(jobs);
+  }
+
+  stretchInWorker(buffer, factor) {
+    this.worker ||= new Worker(new URL('./stretch-worker.js', import.meta.url), { type: 'module' });
+    this.jobs ||= new Map();
+    if (!this.worker.onmessage) {
+      this.worker.onmessage = e => {
+        const job = this.jobs.get(e.data.id);
+        this.jobs.delete(e.data.id);
+        const out = new AudioBuffer({ length: e.data.channels[0].length, sampleRate: job.rate, numberOfChannels: e.data.channels.length });
+        e.data.channels.forEach((c, i) => out.copyToChannel(c, i));
+        job.resolve(out);
+      };
+    }
+    const id = (this.jobSeq = (this.jobSeq || 0) + 1);
+    const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).slice());
+    return new Promise(resolve => {
+      this.jobs.set(id, { resolve, rate: buffer.sampleRate });
+      this.worker.postMessage({ id, channels, factor, rate: buffer.sampleRate }, channels.map(c => c.buffer));
+    });
+  }
+
   // Plans playback from `startBeat`, or — when called mid-play after an edit — takes over seamlessly:
   // notes and automation from the scheduler's horizon (everything before it is already handed to the
   // audio clock), and playing audio clips from a moment after it, where the old ones stop.
@@ -418,7 +490,7 @@ export class Engine extends EventTarget {
     this.stopAudio(stopAt);
     const cycle = this.project.cycle?.on ? this.project.cycle : null;
     const pass = this.loopCount;
-    scheduleProject(this.transport, this.project, this.nodes, this.audioPool, { from, restartAt, cycle, isRepeat: () => this.loopCount > pass, active: this.audioSources });
+    scheduleProject(this.transport, this.project, this.nodes, this.audioPool, { from, restartAt, cycle, isRepeat: () => this.loopCount > pass, active: this.audioSources, bufferFor: this.bufferFor });
     const m = meter(this.project.timeSig);
     this.transport.scheduleRepeat(time => {
       if (!this.metronome) return;
@@ -433,6 +505,7 @@ export class Engine extends EventTarget {
 
   async play(fromBeat, { countIn = false } = {}) {
     await this.resume();
+    await this.prepareAudio();
     this.loopCount = 0;
     this.reschedule(fromBeat);
     const spb = 60 / this.project.bpm;
@@ -675,7 +748,7 @@ export class Engine extends EventTarget {
 
 // ------------------------------------------------------------------ offline export
 
-export async function renderProject(project, audioPool, { start = 0, end, tail = 2.5, sampleRate = Tone.getContext().sampleRate } = {}) {
+export async function renderProject(project, audioPool, { start = 0, end, tail = 2.5, sampleRate = Tone.getContext().sampleRate, bufferFor = null } = {}) {
   const spb = 60 / project.bpm;
   const stop = end ?? songEnd(project);
   const duration = Math.max(0.5, (stop - start) * spb + tail);
@@ -704,7 +777,7 @@ export async function renderProject(project, audioPool, { start = 0, end, tail =
       ...project,
       tracks: project.tracks.map(t => ({ ...t, regions: t.regions.filter(r => r.start < end) })),
     };
-    scheduleProject(transport, trimmed, nodes, audioPool, { from: start });
+    scheduleProject(transport, trimmed, nodes, audioPool, { from: start, bufferFor });
     transport.start(0, ticks(start));
     if (end != null) transport.stop((end - start) * spb);
   }, duration, 2, sampleRate);

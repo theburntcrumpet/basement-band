@@ -27,6 +27,8 @@ open it and start making music.
   crackle, city ambience, whooshes, booms, drones), drum one-shots, plus any folders of
   WAV/MP3/FLAC/OGG files you add. Drag
   them onto the timeline, or drop audio files in from your file manager.
+- **Tempo-following audio**: recordings and audio clips time-stretch (keeping their pitch) when you
+  change the song tempo; turn off **Follow tempo** in the audio editor for clips that shouldn't.
 - **Arranging audio**: drag an audio clip's bottom-right corner to extend it with silence (e.g. to
   fill whole bars) and its top-right corner to repeat it; clips snap to the grid when moved.
 - **Recording**: record your mic or audio interface onto audio tracks (pick the device and input
@@ -112,7 +114,8 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
   monitoring). Getting below ~10 ms needs a native audio path (see the roadmap). Until then, your
   interface's hardware direct monitoring gives zero-latency (dry) monitoring while recording.
 - **One time signature and tempo per song:** no tempo or meter changes partway through.
-- **Audio doesn't follow tempo changes:** recordings and samples keep their speed and length.
+- **Time-stretching** (WSOLA) keeps pitch and timing but can smear very dense or percussive audio at
+  big tempo changes (more than about ±30%).
 - **Automation covers the mixer settings** (volume, pan, reverb, echo, tone, EQ), not effect or amp
   knobs yet, and lanes don't move with regions.
 - **Songs embed their recordings** (as lossless FLAC, about half the size of WAV) inside the `.bband`
@@ -134,7 +137,8 @@ Roughly in priority order:
 2. ~~Sustain pedal~~ (done: MIDI CC64 and Tab in Musical Typing). Still to do: mod wheel, pitch
    bend and other MIDI CCs driving SoundFont/SFZ and synth sounds.
 3. ~~MIDI file import/export~~ (done).
-4. **Tempo-following audio** (time-stretching loops and recordings).
+4. ~~Tempo-following audio~~ (done: clips time-stretch to the song tempo; Follow tempo can be turned
+   off per clip).
 5. **Tempo and time-signature changes** within a song.
 6. ~~Smaller song files~~ (recordings now stored as FLAC); optionally keep audio in a folder beside
    the song.

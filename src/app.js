@@ -1,7 +1,7 @@
 // App controller: wires the store, audio engine and UI together.
 
 import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate, trackForPart, uid, barBeats, changeTimeSig } from './state.js';
-import { Engine, renderProject, songEnd, expandRegion } from './engine/engine.js';
+import { Engine, renderProject, songEnd, expandRegion, sourceSpb } from './engine/engine.js';
 import { getInstrument, isKit, loadBuffer } from './engine/instruments.js';
 import { setLibrary, inspect, registerDefs, exportDefs, INSTRUMENT_FILE } from './engine/user-instruments.js';
 import { toBase64, fromBase64 } from './engine/wav.js';
@@ -72,9 +72,13 @@ class App {
     if (this.monitorTrack && !store.track(this.monitorTrack)) this.stopMonitoring();
     // Mixer, amp and effect changes apply directly; only re-plan playback when timing could change.
     const plan = this.playbackPlan(p);
-    if (this.engine.playing && plan !== this.lastPlan) {
-      clearTimeout(this.rescheduleTimer);
-      this.rescheduleTimer = setTimeout(() => this.engine.reschedule(), 60);
+    if (plan !== this.lastPlan) {
+      // Start fitting audio to a new tempo straight away, so pressing Play doesn't wait.
+      const ready = this.engine.prepareAudio(p);
+      if (this.engine.playing) {
+        clearTimeout(this.rescheduleTimer);
+        this.rescheduleTimer = setTimeout(() => ready.then(() => this.engine.playing && this.engine.reschedule()), 60);
+      }
     }
     this.lastPlan = plan;
     this.refresh();
@@ -194,7 +198,9 @@ class App {
   async togglePlay() {
     if (this.engine.playing || this.recording) return this.stop();
     await this.engine.whenLoaded();
+    const slow = setTimeout(() => toast('Fitting audio to the new tempo…', 3000), 250);
     await this.engine.play(store.ui.playhead);
+    clearTimeout(slow);
     $('#btn-play').classList.add('on');
   }
 
@@ -260,7 +266,7 @@ class App {
       this.engine.audioPool.set(id, result.buffer);
       const spb = 60 / store.project.bpm;
       store.update(() => {
-        track.regions.push({ id: uid(), name: 'Recording', start: result.startBeat, length: result.buffer.duration / spb, offset: 0, audioId: id });
+        track.regions.push({ id: uid(), name: 'Recording', start: result.startBeat, length: result.buffer.duration / spb, offset: 0, audioId: id, bpm: store.project.bpm });
       });
       return;
     }
@@ -662,7 +668,7 @@ class App {
             // Looped clip: the right half keeps looping, starting partway into a pass.
             right.phase = ((region.phase || 0) + cut) % loop;
           } else {
-            right.offset = (region.offset || 0) + ((region.phase || 0) + cut) * spb;
+            right.offset = (region.offset || 0) + ((region.phase || 0) + cut) * sourceSpb(region, store.project);
             right.phase = 0;
             right.loopLength = right.length;
             region.loopLength = cut;
@@ -853,7 +859,8 @@ class App {
         target = newTrack('audio', null, name);
         p.tracks.push(target);
       }
-      target.regions.push({ id: uid(), name, start: beat, length: buffer.duration / spb, offset: 0, audioId: id });
+      // Clips remember the tempo they arrived at, so they can follow later tempo changes.
+      target.regions.push({ id: uid(), name, start: beat, length: buffer.duration / spb, offset: 0, audioId: id, bpm: p.bpm });
       store.ui.selectedTrack = target.id;
     });
   }
@@ -1112,7 +1119,8 @@ class App {
       const rate = Tone.getContext().sampleRate;
       const sampleRate = fmt.ext === 'mp3' && !MP3_RATES.includes(rate) ? 44100 : rate;
       bar.style.width = '15%';
-      const buffer = await renderProject(p, this.engine.audioPool, { ...range, sampleRate });
+      await this.engine.prepareAudio(p);
+      const buffer = await renderProject(p, this.engine.audioPool, { ...range, sampleRate, bufferFor: this.engine.bufferFor });
       status.textContent = `Encoding ${fmt.ext.toUpperCase()}…`;
       const bytes = await encodeAudio(buffer, formatId, f => { bar.style.width = `${15 + f * 85}%`; });
       close();

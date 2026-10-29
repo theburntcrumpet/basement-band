@@ -11,6 +11,7 @@ import { DRUM_NAMES } from '../music/band.js';
 import { isBlackKey, midiToNote, scaleNotes } from '../music/theory.js';
 import { peaks } from '../engine/wav.js';
 import { meter, barBeat } from '../music/meter.js';
+import { sourceSpb } from '../engine/engine.js';
 
 const KEYS_W = 64;
 // Drum rows top to bottom: percussion and cymbals up top, kick at the bottom like a drum chart.
@@ -304,7 +305,7 @@ export class Editor {
 
   renderAudio(track, region) {
     const buf = this.app.engine.audioPool.get(region.audioId);
-    this.tools.replaceChildren(
+    this.tools.replaceChildren(...[
       h('label', {}, 'Gain', h('input', {
         type: 'range', min: -24, max: 12, step: 0.5, value: region.gain ?? 0,
         onmousedown: () => store.beginGesture(),
@@ -317,8 +318,11 @@ export class Editor {
         oninput: e => { region.offset = Number(e.target.value); this.renderAudio(track, region); },
         onchange: () => store.endGesture(),
       })),
+      region.bpm ? h('label', { title: 'Time-stretch this clip so it stays in time when the song tempo changes' },
+        h('input', { type: 'checkbox', checked: region.followTempo !== false, onchange: e => store.update(() => { region.followTempo = e.target.checked; }) }),
+        `Follow tempo (recorded at ${Math.round(region.bpm * 10) / 10} bpm)`) : null,
       h('span', { class: 'editor-hint' }, buf ? `${buf.duration.toFixed(2)} s • ${buf.numberOfChannels === 1 ? 'mono' : 'stereo'}` : 'missing audio'),
-    );
+    ].filter(Boolean));
     this.wrap = null;
     const cv = h('canvas', { class: 'editor-canvas' });
     this.body.replaceChildren(h('div', { class: 'editor-wrap' }, cv));
@@ -331,7 +335,7 @@ export class Editor {
       ctx.fillRect(0, 0, w, ht);
       const p = peaks(buf, w);
       const off = (region.offset || 0) / buf.duration * w;
-      const end = off + region.length * (60 / store.project.bpm) / buf.duration * w;
+      const end = off + region.length * sourceSpb(region, store.project) / buf.duration * w;
       ctx.fillStyle = c.cvWave;
       for (let x = 0; x < w; x++) {
         ctx.globalAlpha = x >= off && x <= end ? 1 : 0.3;
