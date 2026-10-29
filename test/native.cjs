@@ -123,6 +123,66 @@ module.exports = async function native(win, app) {
     app.stopMonitoring();
     return 'ok monitoring ' + info.monitorLatencyMs + ' ms (chain ' + Math.max(...latencies) + ' frames), take ' + buf.duration.toFixed(2) + ' s at beat ' + take.start.toFixed(3) + ', clicks exactly 1 s apart' + (stillMonitoring ? ', still monitoring after recording' : '');`);
 
+  await check('native song engine matches the app: sampled instruments and drum kits', `
+    const { renderProject, resolveInstrument } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const rate = Tone.getContext().sampleRate;
+    const bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
+    const bandDb = async buf => {
+      const out = [];
+      for (const f of bands) {
+        const ctx = new OfflineAudioContext(1, buf.length, rate);
+        const src = ctx.createBufferSource(); src.buffer = buf;
+        const bp1 = ctx.createBiquadFilter(), bp2 = ctx.createBiquadFilter();
+        for (const bp of [bp1, bp2]) { bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 1.4; }
+        src.connect(bp1).connect(bp2).connect(ctx.destination); src.start();
+        const r = (await ctx.startRendering()).getChannelData(0);
+        let e = 0; for (let i = 0; i < r.length; i++) e += r[i] * r[i];
+        out.push(10 * Math.log10(e / r.length + 1e-20));
+      }
+      return out;
+    };
+    const mono = (b, n) => { const m = new AudioBuffer({ length: n, sampleRate: rate, numberOfChannels: 1 }); const d = m.getChannelData(0), l = b.getChannelData(0), r = b.getChannelData(1); for (let i = 0; i < n; i++) d[i] = 0.5 * ((l[i] || 0) + (r[i] || 0)); return m; };
+    const env = (b, n) => { const out = []; const l = b.getChannelData(0); for (let w = 0; w + 2400 <= n; w += 2400) { let p = 0; for (let i = w; i < w + 2400; i++) p = Math.max(p, Math.abs(l[i])); out.push(20 * Math.log10(p + 1e-9)); } return out; };
+    const chord = (t, notes, d = 1.5, v = 0.8) => notes.map(n => ({ t, d, n, v }));
+    const cases = [
+      ['grand piano', 'grand-piano', [...chord(0, [48, 60, 64, 67]), ...chord(2, [53, 57, 60, 65], 0.5, 0.5), { t: 3, d: 0.25, n: 84, v: 1 }], {}],
+      ['electric bass', 'electric-bass', [0, 0.5, 1, 1.5, 2, 3].map((t, i) => ({ t, d: 0.4, n: [36, 36, 43, 41, 38, 31][i], v: 0.6 + i * 0.05 })), { eqLow: 4 }],
+      ['strings (slow attack), panned', 'strings', chord(0, [43, 55, 62, 71], 3), { pan: -0.5, reverb: 0.3 }],
+      ['rock kit', 'kit-rock', [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5].flatMap((t, i) => [{ t, d: 0.25, n: 42, v: 0.5 + (i % 2) * 0.3 }, ...(i % 4 === 0 ? [{ t, d: 0.25, n: 36, v: 0.9 }] : []), ...(i % 4 === 2 ? [{ t, d: 0.25, n: 38, v: 0.85 }] : [])]).concat([{ t: 3.75, d: 0.25, n: 46, v: 0.7 }]), { echo: 0.3 }],
+      ['strings dry', 'strings', chord(0, [43, 55, 62, 71], 3), {}],
+      ['rock kit dry', 'kit-rock', [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5].flatMap((t, i) => [{ t, d: 0.25, n: 42, v: 0.5 + (i % 2) * 0.3 }, ...(i % 4 === 0 ? [{ t, d: 0.25, n: 36, v: 0.9 }] : [])]).concat([{ t: 3.75, d: 0.25, n: 46, v: 0.7 }]), {}],
+      ['808 kit', 'kit-808', [0, 1, 2, 3].flatMap(t => [{ t, d: 0.25, n: 36, v: 1 }, { t: t + 0.5, d: 0.25, n: 39, v: 0.7 }]), { volume: -8 }],
+    ];
+    const report = [];
+    let worst = 0, worstEnv = 0;
+    for (const [name, inst, notes, settings] of cases) {
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack(inst.startsWith('kit') ? 'drums' : 'instrument', inst, name), { reverb: 0, ...settings });
+      t.regions.push({ id: 'r', start: 0, length: 4, loopLength: 4, notes });
+      p.tracks.push(t);
+      const web = await renderProject(p, new Map(), { start: 0, end: 4, tail: 1.5, sampleRate: rate });
+      const loaded = new Map([[t.id, await resolveInstrument(inst)]]);
+      const song = songForNative(p, loaded);
+      if (!song.tracks[0].instrument) return name + ': not supported natively';
+      await new Promise(r => setTimeout(r, 300));   // let the uploads land
+      const nat = await renderNative(song, { start: 0, end: 4, tail: 1.5, sampleRate: rate });
+      const n = Math.min(web.length, nat.length);
+      const a = await bandDb(mono(web, n)), b = await bandDb(mono(nat, n));
+      const diffs = a.map((v, i) => (Math.max(v, b[i]) > -75 ? Math.abs(v - b[i]) : 0));
+      const ea = env(web, n), eb = env(nat, n);
+      const envDiff = Math.max(...ea.map((v, i) => (Math.max(v, eb[i]) > -50 ? Math.abs(v - eb[i]) : 0)));
+      const max = Math.max(...diffs);
+      // Reverb and echo tails differ slightly (random reverb noise; Chromium's delay smears each
+      // repeat a little), so envelopes are held exact only for dry tracks.
+      const wet = (settings.reverb || 0) > 0 || (settings.echo || 0) > 0;
+      worst = Math.max(worst, max); if (!wet) worstEnv = Math.max(worstEnv, envDiff);
+      const where = ea.map((v, i) => (Math.max(v, eb[i]) > -50 && Math.abs(v - eb[i]) > 1.5 ? (i * 0.05).toFixed(2) + 's ' + v.toFixed(1) + '/' + eb[i].toFixed(1) : null)).filter(Boolean).slice(0, 6).join(', ');
+      report.push(name + ' ' + max.toFixed(2) + ' dB (envelope ' + envDiff.toFixed(1) + ' dB' + (where ? ' at ' + where : '') + ')' + (max > 1 ? ' [' + a.map((v, i) => v.toFixed(1) + '/' + b[i].toFixed(1)).join(' ') + ']' : ''));
+    }
+    return worst <= 1 && worstEnv <= 1.5 ? 'ok ' + report.join('; ') : 'differences: ' + report.join('; ');`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

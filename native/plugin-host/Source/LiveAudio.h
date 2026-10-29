@@ -10,6 +10,7 @@
 #pragma once
 
 #include "Dsp.h"
+#include "Song.h"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <atomic>
@@ -146,6 +147,9 @@ public:
     }
 
     ~LiveAudio() override { close(); }
+
+    SamplePool samples;
+    SongEngine song { samples };
 
     //==============================================================================
     var listDevices()
@@ -419,6 +423,7 @@ private:
         master.prepare (rate);
         mono.setSize (1, block * 2);
         bus.setSize (5, block * 2);
+        song.prepare (rate, block * 2);
         // frameCount keeps running: it's our clock, paired with syncTime for the app.
         const ScopedLock l (pendingLock);
         hasPending = true;  // configure the fresh chain
@@ -471,10 +476,13 @@ private:
 
         for (int c = 0; c < numOut; ++c)
             if (out[c] != nullptr) FloatVectorOperations::clear (out[c], n);
-        if (! monitoring || numOut == 0) return;
-        bus.clear();
+        if (numOut == 0) return;
         auto* L = out[0];
         float* RR = numOut > 1 && out[1] != nullptr ? out[1] : bus.getWritePointer (4);
+        // The song (when the app plays through the native engine), then the live input on top.
+        song.process (L, RR, n);
+        if (! monitoring) return;
+        bus.clear();
         chain.process (x, n, L, RR, bus.getWritePointer (0), bus.getWritePointer (1), bus.getWritePointer (2), bus.getWritePointer (3));
         sends.process (bus.getWritePointer (0), bus.getWritePointer (1), bus.getWritePointer (2), bus.getWritePointer (3), L, RR, n);
         master.process (L, RR, n);
@@ -493,8 +501,15 @@ private:
 
     void timerCallback() override
     {
-        // Input level for the meter.
+        // Input level for the meter, and the song's position and meters.
         sendJson (makeEvent ("inputLevel", peak.exchange (0)));
+        auto* o = new DynamicObject();
+        o->setProperty ("event", "transport");
+        o->setProperty ("beat", song.currentBeat());
+        o->setProperty ("playing", song.isPlaying());
+        o->setProperty ("time", syncTime.load());
+        o->setProperty ("meters", song.takeMeters());
+        sendJson (var (o));
         // Recorded audio: [i64 first frame][f64 frame time][f64 frame of that time][f32 samples...]
         auto r = ringRead.load(), w = ringWrite.load();
         if (w == r || recordFirstFrame.load() < 0) return;

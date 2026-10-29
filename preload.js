@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('host', {
     addFolder: () => ipcRenderer.invoke('plugins:folder-pick'),
     send: msg => ipcRenderer.send('plugin:json', JSON.stringify(msg)),
     render: bytes => ipcRenderer.send('plugin:render', bytes),
+    upload: bytes => ipcRenderer.send('plugin:sample', bytes),
     onMessage: cb => { ipcRenderer.on('plugin:msg', (_e, m) => cb(m)); },
   },
 });

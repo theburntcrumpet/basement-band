@@ -274,6 +274,7 @@ function registerIpc(win) {
   });
   ipcMain.on('plugin:json', (_e, text) => { if (typeof text === 'string') pluginHost.write('J', text); });
   ipcMain.on('plugin:render', (_e, bytes) => { if (bytes instanceof Uint8Array || bytes instanceof ArrayBuffer) pluginHost.write('R', bytes); });
+  ipcMain.on('plugin:sample', (_e, bytes) => { if (bytes instanceof Uint8Array || bytes instanceof ArrayBuffer) pluginHost.write('S', bytes); });
 }
 
 let pluginHost = null;

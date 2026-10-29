@@ -122,8 +122,12 @@ export class TrackNode {
       const points = curve(track, p.key);
       if (points.length && beat == null) continue;
       const { param, map } = this.autoTarget(p.key);
-      param.rampTo(map(points.length ? valueAt(points, beat) : staticValue(track, p.key)), 0.05, now);
+      const value = map(points.length ? valueAt(points, beat) : staticValue(track, p.key));
+      // A new channel starts at its settings; later changes glide, so knob moves don't click.
+      if (this.applied) param.rampTo(value, 0.05, now);
+      else param.setValueAtTime(value, now);
     }
+    this.applied = true;
     this.fx.setConfig(track.fx);
     this.amp.setConfig(track.amp);
     const d = track.drive || 0;

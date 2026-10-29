@@ -10,6 +10,10 @@
 //                         u32 count, then count × {u32 offset, u8 status, u8 data1, u8 data2, u8 pad}
 //   'A'  rendered audio:  u32 seq, u32 inst, u32 frames, u32 channels, then planar float32
 //   'I'  recorded input:  i64 first frame, f64 clock time, f64 frame at that time, then float32 mono
+//   'S'  sample upload:   u32 id length, id (UTF-8), f64 rate, u32 channels, u32 frames, planar float32
+//
+// Song playback (Song.h): song:set, transport:play, transport:stop, transport:seek, live:note,
+// song:render (offline, for export and checks).
 //
 // Live audio (see LiveAudio.h): audio:devices, audio:open, audio:close, audio:status, audio:clock,
 // monitor:set, record:start, record:stop, monitor:render, test:stats.
@@ -254,11 +258,32 @@ private:
             const char type = data[0];
             if (type == 'R')
                 render (data.data() + 1, len - 1);
+            else if (type == 'S')
+                addSample (data.data() + 1, len - 1);
             else if (type == 'J')
                 command (JSON::parse (String::fromUTF8 (data.data() + 1, (int) len - 1)));
         }
         // The app closed our stdin (or went away): we're done.
         MessageManager::callAsync ([] { JUCEApplicationBase::quit(); });
+    }
+
+    // Decoded sample data for the song's instruments.
+    void addSample (const char* p, size_t size)
+    {
+        if (size < 4) return;
+        uint32_t idLen; memcpy (&idLen, p, 4);
+        if (size < 4 + idLen + 16) return;
+        const String id = String::fromUTF8 (p + 4, (int) idLen);
+        const char* q = p + 4 + idLen;
+        double sr; uint32_t channels, frames;
+        memcpy (&sr, q, 8); memcpy (&channels, q + 8, 4); memcpy (&frames, q + 12, 4);
+        if (channels == 0 || channels > 2 || size < 4 + idLen + 16 + (size_t) channels * frames * 4) return;
+        auto sample = std::make_shared<bb::Sample>();
+        sample->rate = sr;
+        sample->data.setSize ((int) channels, (int) frames);
+        for (uint32_t c = 0; c < channels; ++c)
+            memcpy (sample->data.getWritePointer ((int) c), q + 16 + (size_t) c * frames * 4, (size_t) frames * 4);
+        MessageManager::callAsync ([this, id, sample] { liveAudio().samples.add (id, sample); });
     }
 
     //==============================================================================
@@ -496,6 +521,39 @@ private:
                 inst->head.samples = 0;
             }
             reply (req, true);
+        }
+        else if (cmd == "live:note")
+        {
+            // Straight to the audio thread: this is the latency you feel when playing.
+            if (auto* l = liveRaw.load())
+                l->song.liveNote (msg["track"].toString(), (int) msg["midi"], (float) (double) msg.getProperty ("velocity", 0.8), (bool) msg.getProperty ("on", true));
+        }
+        else if (cmd.startsWith ("song:") || cmd.startsWith ("transport:"))
+        {
+            MessageManager::callAsync ([this, cmd, msg, req]
+            {
+                auto& l = liveAudio();
+                if (cmd == "song:set") { l.song.setSong (msg["song"]); return reply (req, true); }
+                if (cmd == "transport:play")
+                {
+                    l.song.play ((double) msg["beat"], (int64) (double) msg.getProperty ("delaySamples", 0.0), (bool) msg.getProperty ("countIn", false));
+                    return reply (req, true);
+                }
+                if (cmd == "transport:stop") { l.song.stop(); return reply (req, true); }
+                if (cmd == "transport:seek") { l.song.seek ((double) msg["beat"]); return reply (req, true); }
+                if (cmd == "song:render")
+                {
+                    // An offline render in a separate engine, sharing the uploaded samples.
+                    bb::SongEngine offline (l.samples);
+                    offline.prepare ((double) msg.getProperty ("rate", 48000.0), 512);
+                    offline.setSong (msg["song"]);
+                    auto out = offline.render ((double) msg["start"], (double) msg["end"], (double) msg.getProperty ("tail", 2.5));
+                    MemoryBlock result;
+                    for (int c = 0; c < 2; ++c) result.append (out.getReadPointer (c), sizeof (float) * (size_t) out.getNumSamples());
+                    return reply (req, true, {}, object ({ { "frames", out.getNumSamples() }, { "output", Base64::toBase64 (result.getData(), result.getSize()) } }));
+                }
+                reply (req, false, "Unknown command " + cmd);
+            });
         }
         else if (cmd.startsWith ("audio:") || cmd.startsWith ("monitor:") || cmd.startsWith ("record:") || cmd == "test:stats")
         {
