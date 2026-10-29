@@ -41,7 +41,7 @@ struct WebFeedbackDelay
 // Web Audio BiquadFilterNode, one channel.
 struct Biquad
 {
-    enum Type { lowpass, highpass, peaking, lowshelf, highshelf };
+    enum Type { lowpass, highpass, peaking, lowshelf, highshelf, bandpass };
 
     Type type = lowpass;
     double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
@@ -64,6 +64,13 @@ struct Biquad
                 const double alpha = sn / (2 * std::pow (10.0, q / 20.0));
                 const double k = t == lowpass ? (1 - cs) : (1 + cs);
                 B0 = k / 2; B1 = t == lowpass ? k : -k; B2 = k / 2;
+                A0 = 1 + alpha; A1 = -2 * cs; A2 = 1 - alpha;
+                break;
+            }
+            case bandpass:
+            {
+                const double alpha = sn / (2 * jmax (1.0e-4, q));
+                B0 = alpha; B1 = 0; B2 = -alpha;
                 A0 = 1 + alpha; A1 = -2 * cs; A2 = 1 - alpha;
                 break;
             }

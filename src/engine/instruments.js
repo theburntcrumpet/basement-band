@@ -374,6 +374,7 @@ function makeSynthKit(out) {
   snareNoise.volume.value = -6; clap.volume.value = -4; snareBody.volume.value = -8;
   const all = [kick, snareNoise, snareFilter, snareBody, clap, clapFilter, hat, openHat, tom, crash];
   return {
+    parts: { kick, snareNoise, snareFilter, snareBody, clap, clapFilter, hat, openHat, tom, crash },
     play(midi, time, vel) {
       switch (midi) {
         case 35: case 36: kick.triggerAttackRelease('C1', 0.3, time, vel); break;
@@ -435,7 +436,15 @@ export function nativeParts(id) {
     fx.forEach(n => n.dispose());
     return spec;
   }
-  if (def.type === 'kit' && def.kit !== 'synth') {
+  if (def.type === 'kit' && def.kit === 'synth') {
+    const bus = new Tone.Gain();
+    const kit = makeSynthKit(bus);
+    const parts = Object.fromEntries(Object.entries(kit.parts).map(([k, v]) => [k, v.get()]));
+    kit.dispose();
+    bus.dispose();
+    return { kind: 'synthkit', parts, effects: [], volume: def.volume || 0 };
+  }
+  if (def.type === 'kit') {
     const fx = def.fx === 'lofi' ? lofiKitFx() : [];
     const spec = { effects: effectSpecs(fx), volume: def.volume || 0 };
     fx.forEach(n => n.dispose());

@@ -30,39 +30,77 @@ public:
         return table[(size_t) k] + (table[(size_t) k + 1] - table[(size_t) k]) * f;
     }
 
-    // partials[0] is the fundamental. maxHarmonic limits partials to those below Nyquist.
-    static std::shared_ptr<const Wavetable> make (const std::vector<double>& partials, double phase, int maxHarmonic)
+    // The band-limited versions of one waveform as Chromium's PeriodicWave builds them: 36 ranges a
+    // third of an octave apart; range r keeps 2048·2^(−r/3) partials, and a frequency f plays a blend
+    // of ranges ⌊p⌋ and ⌊p⌋+1 where p = 1 + 3·log2(f / (rate / 4096)).
+    struct Set
+    {
+        std::vector<std::shared_ptr<const Wavetable>> tables;   // one per range
+        static constexpr int ranges = 36;
+
+        float at (double phase01, double f, double rate) const noexcept
+        {
+            const double lowest = rate / size;
+            const double ratio = std::abs (f) > 0 ? std::abs (f) / lowest : 0.5;
+            const double p = jlimit (0.0, (double) ranges - 1, 1 + std::log2 (ratio) * 3);
+            const int r1 = (int) p, r2 = jmin (r1 + 1, ranges - 1);
+            const float k = (float) (p - r1);
+            const float a = tables[(size_t) r1]->at (phase01), b = tables[(size_t) r2]->at (phase01);
+            return a + (b - a) * k;
+        }
+    };
+
+    // partials[0] is the fundamental; the waveform is Σ b_n·sin(n(θ − phase)), normalised (from the
+    // full-band version) to a peak of 1 as Web Audio does. Built with inverse FFTs and cached.
+    static std::shared_ptr<const Set> make (const std::vector<double>& partials, double phase)
     {
         static CriticalSection cacheLock;
-        static std::map<String, std::shared_ptr<const Wavetable>> cache;
+        static std::map<String, std::shared_ptr<const Set>> cache;
         String key;
         for (auto b : partials) key << String (b, 6) << ",";
-        key << "|" << String (phase, 6) << "|" << jmin (maxHarmonic, (int) partials.size());
+        key << "|" << String (phase, 6);
         const ScopedLock l (cacheLock);
         if (auto it = cache.find (key); it != cache.end()) return it->second;
 
-        // Normalisation comes from the full waveform, like Web Audio's.
+        const int maxN = jmin ((int) partials.size(), size / 2 - 1);
+        dsp::FFT fft (12);   // 4096
         auto render = [&] (int limit) {
-            std::vector<double> x ((size_t) size, 0.0);
+            // sin(nθ − np) = Re(−i·e^{−inp}·e^{inθ}): bin n holds b_n·(−sin np − i cos np), times N/2
+            // so the inverse transform yields the series directly.
+            std::vector<float> data ((size_t) size * 2, 0.0f);
             for (int n = 1; n <= limit; ++n)
             {
-                const double b = partials[(size_t) n - 1];
-                if (b == 0.0) continue;
-                for (int i = 0; i < size; ++i)
-                    x[(size_t) i] += b * std::sin (n * (MathConstants<double>::twoPi * i / size - phase));
+                const double b = partials[(size_t) n - 1] * size / 2.0;
+                data[(size_t) n * 2] = (float) (-b * std::sin (n * phase));
+                data[(size_t) n * 2 + 1] = (float) (-b * std::cos (n * phase));
             }
+            fft.performRealOnlyInverseTransform (data.data());
+            std::vector<float> x ((size_t) size);
+            for (int i = 0; i < size; ++i) x[(size_t) i] = data[(size_t) i] * (float) size;   // JUCE scales the inverse by 1/N
             return x;
         };
-        const auto full = render ((int) partials.size());
-        double peak = 0;
+        const auto full = render (maxN);
+        float peak = 0;
         for (auto v : full) peak = jmax (peak, std::abs (v));
-        const auto limited = jmin (maxHarmonic, (int) partials.size()) == (int) partials.size() ? full : render (jmax (1, maxHarmonic));
-        auto w = std::make_shared<Wavetable>();
-        const double scale = peak > 0 ? 1.0 / peak : 1.0;
-        for (int i = 0; i < size; ++i) w->table[(size_t) i] = (float) (limited[(size_t) i] * scale);
-        w->table[size] = w->table[0];
-        cache[key] = w;
-        return w;
+        const float scale = peak > 0 ? 1.0f / peak : 1.0f;
+        auto set = std::make_shared<Set>();
+        std::map<int, std::shared_ptr<const Wavetable>> byCount;
+        for (int r = 0; r < Set::ranges; ++r)
+        {
+            const int count = jmax (1, jmin (maxN, (int) (2048 * std::pow (2.0, -r / 3.0))));
+            auto& w = byCount[count];
+            if (w == nullptr)
+            {
+                auto t = std::make_shared<Wavetable>();
+                const auto x = count == maxN ? full : render (count);
+                for (int i = 0; i < size; ++i) t->table[(size_t) i] = x[(size_t) i] * scale;
+                t->table[size] = t->table[0];
+                w = t;
+            }
+            set->tables.push_back (w);
+        }
+        cache[key] = set;
+        return set;
     }
 };
 
@@ -130,20 +168,22 @@ public:
             if (s.fat && voices > 1) detunes[(size_t) i] = std::pow (2.0, (-s.spread / 2 + s.spread / (voices - 1) * i) / 1200.0);
         }
         tables.clear();
+        ignoreUnused (freq);
         if (s.type == "pulse") return;   // a thresholded triangle, built per sample
         const auto partials = s.type == "custom" ? s.partials : basicPartials (s.type);
-        const int maxHarmonic = (int) std::floor (rate / 2 / jmax (1.0, freq));
         for (int i = 0; i < voices; ++i)
-            tables.push_back (Wavetable::make (partials, phaseOffsets[(size_t) i], maxHarmonic));
+            tables.push_back (Wavetable::make (partials, phaseOffsets[(size_t) i]));
     }
 
-    // One sample at frequency f (Hz).
+    // One sample at frequency f (Hz). Like Chromium's OscillatorNode, the frequency is limited to
+    // ±Nyquist and the waveform loses partials as it rises (so FM doesn't alias).
     float next (double f) noexcept
     {
         double out = 0;
         for (size_t i = 0; i < phases.size(); ++i)
         {
-            const double inc = f * detunes[i] / rate;
+            const double fi = jlimit (-rate / 2, rate / 2, f * detunes[i]);
+            const double inc = fi / rate;
             if (settings.type == "pulse")
             {
                 // Tone.PulseOscillator: a triangle plus the width, through a sign-like curve.
@@ -152,9 +192,9 @@ public:
                 out += pulseShape (tri + settings.width);
             }
             else
-                out += tables[i]->at (phases[i]);
+                out += tables[i]->at (phases[i], fi, rate);
             phases[i] += inc;
-            if (phases[i] >= 1) phases[i] -= std::floor (phases[i]);
+            phases[i] -= std::floor (phases[i]);
         }
         return (float) (out * gain);
     }
@@ -164,7 +204,7 @@ private:
     double rate = 48000;
     float gain = 1;
     std::vector<double> phases, detunes, phaseOffsets;
-    std::vector<std::shared_ptr<const Wavetable>> tables;
+    std::vector<std::shared_ptr<const Wavetable::Set>> tables;
 
     static double triangle (double p)
     {
@@ -290,6 +330,7 @@ public:
         if (t == "peaking") return Biquad::peaking;
         if (t == "lowshelf") return Biquad::lowshelf;
         if (t == "highshelf") return Biquad::highshelf;
+        if (t == "bandpass") return Biquad::bandpass;
         return Biquad::lowpass;
     }
 
@@ -429,6 +470,168 @@ private:
     int counter = 0;
     double lastFilterEnv = -1;
     static constexpr double minus10 = 0.31622776601683794;
+};
+
+//==============================================================================
+// The synth drum kit's voices (instruments.js makeSynthKit). Each is monophonic like Tone's: a new hit
+// restarts the oscillators and takes the envelope from wherever it is.
+
+inline double toneVolume (const var& o) { return Decibels::decibelsToGain ((double) o.getProperty ("volume", 0.0)); }
+
+// Tone.MembraneSynth: a sine sweeping exponentially from note × octaves down to the note.
+class MembraneVoice
+{
+public:
+    void setup (const var& o, double sr)
+    {
+        rate = sr;
+        pitchDecay = (double) o.getProperty ("pitchDecay", 0.05);
+        octaves = (double) o.getProperty ("octaves", 10.0);
+        env = ToneEnvelope::parse (o["envelope"]); env.rate = sr;
+        gain = (float) toneVolume (o);
+    }
+
+    void trigger (double hz, double velocity, int64 lengthSamples)
+    {
+        f0 = hz * octaves; f1 = hz; t = 0; phase = 0;
+        env.triggerAttack (velocity);
+        releaseAt = lengthSamples;
+    }
+
+    void render (float* L, float* R, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (t == releaseAt) env.triggerRelease();
+            const double s = (double) t++ / rate;
+            const double f = s < pitchDecay ? f0 * std::pow (f1 / f0, s / pitchDecay) : f1;
+            const float e = env.next();
+            if (e == 0.0f && env.silent()) { phase += f / rate; continue; }
+            const float x = (float) std::sin (MathConstants<double>::twoPi * phase) * e * gain;
+            phase += f / rate;
+            L[i] += x; R[i] += x;
+        }
+    }
+
+private:
+    double rate = 48000, pitchDecay = 0.05, octaves = 10, f0 = 440, f1 = 440, phase = 0;
+    ToneEnvelope env;
+    float gain = 1;
+    int64 t = 0, releaseAt = -1;
+};
+
+// Tone.NoiseSynth: stereo noise (independent channels, as Tone's buffers are) through an envelope,
+// then the kit's band-pass filter.
+class NoiseVoice
+{
+public:
+    void setup (const var& o, const var& filterOptions, double sr)
+    {
+        env = ToneEnvelope::parse (o["envelope"]); env.rate = sr;
+        pink = o["noise"].getProperty ("type", "white").toString() == "pink";
+        gain = (float) toneVolume (o);
+        filter.setup (filterOptions, sr);
+    }
+
+    void trigger (double velocity, int64 lengthSamples) { t = 0; env.triggerAttack (velocity); releaseAt = lengthSamples; }
+
+    void render (float* L, float* R, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (t++ == releaseAt) env.triggerRelease();
+            const float e = env.next() * gain;
+            const float l = noise (0) * e, r = noise (1) * e;
+            L[i] += filter.processL (l);
+            R[i] += filter.processR (r);
+        }
+    }
+
+private:
+    ToneEnvelope env;
+    ToneFilter filter;
+    bool pink = false;
+    float gain = 1;
+    int64 t = 0, releaseAt = -1;
+    Random random;
+    double b[2][7] {};
+
+    float noise (int c)
+    {
+        const double white = random.nextDouble() * 2 - 1;
+        if (! pink) return (float) white;
+        auto& k = b[c];   // Paul Kellet's pink filter, as Tone generates it
+        k[0] = 0.99886 * k[0] + white * 0.0555179; k[1] = 0.99332 * k[1] + white * 0.0750759;
+        k[2] = 0.969 * k[2] + white * 0.153852;    k[3] = 0.8665 * k[3] + white * 0.3104856;
+        k[4] = 0.55 * k[4] + white * 0.5329522;    k[5] = -0.7616 * k[5] - white * 0.016898;
+        const double out = (k[0] + k[1] + k[2] + k[3] + k[4] + k[5] + k[6] + white * 0.5362) * 0.11;
+        k[6] = white * 0.115926;
+        return (float) out;
+    }
+};
+
+// Tone.MetalSynth: six square-wave FM oscillators at inharmonic ratios, through a high-pass whose
+// cutoff follows the envelope (resonance up `octaves`), all scaled by the envelope.
+class MetalVoice
+{
+public:
+    void setup (const var& o, double sr)
+    {
+        rate = sr;
+        harmonicity = (double) o.getProperty ("harmonicity", 5.1);
+        modIndex = (double) o.getProperty ("modulationIndex", 32.0);
+        resonance = (double) o.getProperty ("resonance", 4000.0);
+        octaves = (double) o.getProperty ("octaves", 1.5);
+        env = ToneEnvelope::parse (o["envelope"]); env.rate = sr; env.sustain = 0; env.attackCurve = "linear";
+        gain = (float) toneVolume (o);
+    }
+
+    void trigger (double hz, double velocity, int64 lengthSamples)
+    {
+        static const double ratios[6] = { 1.0, 1.483, 1.932, 2.546, 2.63, 3.897 };
+        OscSettings sq; sq.type = "square";
+        for (int i = 0; i < 6; ++i)
+        {
+            freqs[i] = hz * ratios[i];
+            carriers[i].start (sq, freqs[i], rate);
+            modulators[i].start (sq, freqs[i] * harmonicity, rate);
+        }
+        env.triggerAttack (velocity);
+        t = 0; releaseAt = lengthSamples; active = true;
+    }
+
+    void release() { env.triggerRelease(); }
+
+    void render (float* L, float* R, int n)
+    {
+        if (! active) return;
+        for (int i = 0; i < n; ++i)
+        {
+            if (t++ == releaseAt) env.triggerRelease();
+            const double e = env.next();
+            if (env.silent() && e == 0) { active = false; return; }
+            double sum = 0;
+            for (int k = 0; k < 6; ++k)
+            {
+                const double m = modulators[k].next (freqs[k] * harmonicity);
+                sum += carriers[k].next (freqs[k] + m * freqs[k] * modIndex);
+            }
+            // The high-pass (Q 0 dB) follows the envelope from `resonance` up `octaves`.
+            hp.set (Biquad::highpass, resonance + (resonance * std::pow (2.0, octaves) - resonance) * e, 0, 0, rate);
+            const float x = hp.process ((float) sum) * (float) e * gain;
+            L[i] += x; R[i] += x;
+        }
+    }
+
+private:
+    double rate = 48000, harmonicity = 5.1, modIndex = 32, resonance = 4000, octaves = 1.5;
+    double freqs[6] {};
+    Oscillator carriers[6], modulators[6];
+    ToneEnvelope env;
+    Biquad hp;
+    bool active = false;
+    float gain = 1;
+    int64 t = 0, releaseAt = -1;
 };
 
 //==============================================================================

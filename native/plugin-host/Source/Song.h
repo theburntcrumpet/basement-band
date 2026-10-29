@@ -367,6 +367,80 @@ private:
 };
 
 //==============================================================================
+// instruments.js makeSynthKit(): the Electro kit, drums synthesised by note number.
+class SynthKitInstrument final : public ChainedInstrument
+{
+public:
+    explicit SynthKitInstrument (var partsIn) : parts (std::move (partsIn)) {}
+
+    void noteOn (const NoteEvent& e) override { events.push_back ({ now + e.offset, e.midi, e.velocity }); }
+    void noteOff (int, int) override {}
+    void allNotesOff (int) override {}
+
+protected:
+    void prepareSource() override
+    {
+        kick.setup (part ("kick"), rate);
+        snareBody.setup (part ("snareBody"), rate);
+        tom.setup (part ("tom"), rate);
+        snareNoise.setup (part ("snareNoise"), part ("snareFilter"), rate);
+        clap.setup (part ("clap"), part ("clapFilter"), rate);
+        hat.setup (part ("hat"), rate);
+        openHat.setup (part ("openHat"), rate);
+        crash.setup (part ("crash"), rate);
+    }
+
+    void renderSource (float* L, float* R, int n) override
+    {
+        int pos = 0;
+        std::stable_sort (events.begin(), events.end(), [] (auto& a, auto& b) { return a.at < b.at; });
+        while (pos < n)
+        {
+            size_t k = 0;
+            for (; k < events.size() && events[k].at <= now + pos; ++k) play (events[k].midi, events[k].velocity);
+            events.erase (events.begin(), events.begin() + (long) k);
+            const int next = events.empty() ? n : (int) jlimit<int64> (pos + 1, n, events.front().at - now);
+            const int len = next - pos;
+            kick.render (L + pos, R + pos, len); snareBody.render (L + pos, R + pos, len); tom.render (L + pos, R + pos, len);
+            snareNoise.render (L + pos, R + pos, len); clap.render (L + pos, R + pos, len);
+            hat.render (L + pos, R + pos, len); openHat.render (L + pos, R + pos, len); crash.render (L + pos, R + pos, len);
+            pos = next;
+        }
+        now += n;
+    }
+
+private:
+    struct Event { int64 at; int midi; float velocity; };
+    var parts;
+    std::vector<Event> events;
+    int64 now = 0;
+    MembraneVoice kick, snareBody, tom;
+    NoiseVoice snareNoise, clap;
+    MetalVoice hat, openHat, crash;
+
+    var part (const char* name) const { return parts[name]; }
+    int64 secs (double s) const { return (int64) std::llround (s * rate); }
+    static double hz (int midi) { return 440.0 * std::pow (2.0, (midi - 69) / 12.0); }
+
+    void play (int midi, float v)
+    {
+        switch (midi)
+        {
+            case 35: case 36: kick.trigger (hz (24), v, secs (0.3)); break;
+            case 37: case 38: case 40: snareNoise.trigger (v, secs (0.15)); snareBody.trigger (hz (43), v * 0.8, secs (0.1)); break;
+            case 39: clap.trigger (v, secs (0.2)); break;
+            case 42: case 44: openHat.release(); hat.trigger (400, v, secs (0.05)); break;
+            case 46: openHat.trigger (400, v, secs (0.35)); break;
+            case 41: case 43: tom.trigger (hz (33), v, secs (0.3)); break;
+            case 45: case 47: tom.trigger (hz (38), v, secs (0.3)); break;
+            case 48: case 50: tom.trigger (hz (43), v, secs (0.3)); break;
+            case 49: case 51: case 55: case 57: crash.trigger (300, v * 0.8, secs (1)); break;
+            default: hat.trigger (600, v * 0.6, secs (0.03));
+        }
+    }
+};
+
+//==============================================================================
 // Tone.PolySynth of Synth / MonoSynth / FMSynth voices. A note gets a free voice (one whose release
 // has finished) or a new one up to maxPolyphony; releasing a note releases its sounding voice.
 class PolySynthInstrument final : public ChainedInstrument
@@ -861,6 +935,10 @@ private:
                         for (auto& id : *layers)
                             if (auto s = pool.get (id.toString())) pieces[p.name.toString().getIntValue()].push_back (s);
             return withChain (std::make_unique<KitInstrument> (std::move (pieces)), d);
+        }
+        if (kind == "synthkit")
+        {
+            return withChain (std::make_unique<SynthKitInstrument> (d["parts"]), d);
         }
         if (kind == "poly")
         {
