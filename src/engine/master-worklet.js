@@ -16,7 +16,8 @@ class MasterProcessor extends AudioWorkletProcessor {
     this.limRel = Math.exp(-1 / (0.06 * sr));
     this.limGain = 1;
     this.buf = [new Float32Array(this.look + 1), new Float32Array(this.look + 1)];
-    this.need = new Float32Array(this.look + 1);
+    // Gain each queued sample needs; starts at 1 (empty queue), or every render would fade in.
+    this.need = new Float32Array(this.look + 1).fill(1);
     this.w = 0;
   }
 

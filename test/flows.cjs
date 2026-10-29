@@ -661,14 +661,16 @@ module.exports = async function flows(win, app) {
     const spb = 60 / store.project.bpm;
     const rms = (b, beat, ch = 0) => { const d = b.getChannelData(ch), a = Math.floor(beat * spb * b.sampleRate), n = Math.floor(0.2 * b.sampleRate); let e = 0; for (let i = a; i < a + n; i++) e += d[i] * d[i]; return Math.sqrt(e / n); };
     const early = rms(buf, 1), mid = rms(buf, 4), late = rms(buf, 9);
-    if (!(early < mid && mid < late && late > early * 10)) return 'volume ramp ' + [early, mid, late].map(v => v.toFixed(4));
+    // Linear in gain from -40 dB to 0 dB: halfway is about half the final level.
+    if (!(early < mid && mid > late * 0.35 && mid < late * 0.65 && late > early * 4)) return 'volume ramp ' + [early, mid, late].map(v => v.toFixed(4));
     store.update(() => { t.automation = { pan: [{ t: 0, v: -1 }, { t: 8, v: 1 }] }; });
     const pb = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 12, tail: 0 });
     const leftEarly = rms(pb, 1, 0) / (rms(pb, 1, 1) + 1e-9), leftLate = rms(pb, 9, 0) / (rms(pb, 9, 1) + 1e-9);
     // Starting playback partway through also picks up the curve.
     const part = await renderProject(store.project, app.engine.audioPool, { start: 6, end: 10, tail: 0 });
     const ratioPart = rms(part, 0, 0) / (rms(part, 0, 1) + 1e-9);
-    return leftEarly > 5 && leftLate < 0.2 && ratioPart < 1 ? 'ok volume ' + early.toFixed(3) + ' -> ' + late.toFixed(3) + ', pan L/R ' + leftEarly.toFixed(1) + ' -> ' + leftLate.toFixed(2) : 'pan ' + leftEarly + ' ' + leftLate + ' part ' + ratioPart;`);
+    // At beat 1 the pan has moved an eighth of the way: -0.75, about 4:1 left.
+    return leftEarly > 3 && leftLate < 0.2 && ratioPart < 1 ? 'ok volume ' + early.toFixed(3) + ' -> ' + late.toFixed(3) + ', pan L/R ' + leftEarly.toFixed(1) + ' -> ' + leftLate.toFixed(2) : 'pan ' + leftEarly + ' ' + leftLate + ' part ' + ratioPart;`);
 
   await new Promise(r => setTimeout(r, 200));
   await shot('18-automation');
@@ -922,6 +924,75 @@ module.exports = async function flows(win, app) {
 
   await new Promise(r => setTimeout(r, 200));
   await shot('20-sections');
+
+  await check('plugins: scan, play in time, export, keep settings, survive a crash', `
+    store.dirty = false;
+    await app.newSong();
+    await app.rescanPlugins();
+    const { pluginList } = await import('./engine/plugins.js');
+    const def = pluginList().find(d => d.name === 'Test Synth');
+    if (!def) return 'not scanned: ' + JSON.stringify(pluginList());
+    app.library.show('sounds');
+    if (![...document.querySelectorAll('#library-body .lib-item .name')].some(e => e.textContent === 'Test Synth')) return 'not in library';
+    store.update(p => { p.bpm = 120; });
+    const t = app.addTrack('instrument', def.id, 'Synth');
+    store.update(() => { t.regions.push({ id: 'p', start: 0, length: 4, loopLength: 4, notes: [0, 1, 2, 3].map(b => ({ t: b, d: 0.25, n: 69, v: 1 })) }); });
+    await app.engine.whenLoaded();
+    const inst = app.engine.nodes.get(t.id).instrument;
+    if (!inst?.selfScheduled) return 'plugin not loaded';
+    const onsets = (data, rate, from = 0) => { const out = []; let quiet = Infinity; for (let i = from; i < data.length; i++) { const a = Math.abs(data[i]); if (a > 0.02 && quiet > rate * 0.05) out.push(i); quiet = a > 0.02 ? 0 : quiet + 1; } return out; };
+    // Export: notes land exactly on the beats (plus the master limiter's 1 ms lookahead).
+    const { renderProject } = await import('./engine/engine.js');
+    const rate = Tone.getContext().sampleRate;
+    const pluginAudio = await app.engine.renderPlugins(store.project, { start: 0, end: 4, sampleRate: rate });
+    const buf = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 4, sampleRate: rate, pluginAudio });
+    const ex = onsets(buf.getChannelData(0), rate, 0).map(f => f / rate);
+    const exErr = Math.max(...[0, 0.5, 1, 1.5].map((s, i) => Math.abs((ex[i] ?? 99) - s - 0.001)));
+    if (ex.length !== 4 || exErr > 0.002) return 'export onsets ' + ex.map(x => x.toFixed(4));
+    // The first note is as loud as the rest (the master limiter used to fade every render in).
+    const d0 = buf.getChannelData(0), peakAt = s => { let m = 0; for (let i = Math.round(s * rate); i < Math.round((s + 0.1) * rate); i++) m = Math.max(m, Math.abs(d0[i])); return m; };
+    if (peakAt(0) < peakAt(1) * 0.9) return 'first note quieter: ' + peakAt(0).toFixed(3) + ' vs ' + peakAt(1).toFixed(3);
+    // Live: record the master output while playing and compare onsets with the transport.
+    const rec = Tone.getContext().createAudioWorkletNode('bb-recorder', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1, channelCountMode: 'explicit' });
+    Tone.connect(app.engine.buses.limiter, rec);
+    const chunks = [];
+    rec.port.onmessage = e => chunks.push(e.data);
+    rec.port.postMessage({ on: true });
+    app.seek(0);
+    inst.underruns = 0;
+    await app.togglePlay();
+    await new Promise(r => setTimeout(r, 2400));
+    const startFrame = app.engine.startedAt.time * rate;
+    await app.stop();
+    rec.port.postMessage({ on: false });
+    await new Promise(r => setTimeout(r, 150));
+    rec.disconnect();
+    const first = chunks[0].frame;
+    const all = new Float32Array(chunks.reduce((n, c) => n + c.data[0].length, 0));
+    let o = 0; for (const c of chunks) { all.set(c.data[0], o); o += c.data[0].length; }
+    const live = onsets(all, rate).map(i => (first + i - startFrame) / rate);
+    const liveErr = Math.max(...[0, 0.5, 1, 1.5].map((s, i) => Math.abs((live[i] ?? 99) - s - 0.001)));
+    if (live.length < 4 || liveErr > 0.003) return 'live onsets ' + live.map(x => x.toFixed(4)) + ' underruns ' + inst.underruns;
+    // Settings: the plugin window changes a setting; saving stores it and reopening restores it.
+    await app.openPluginWindow(t);
+    await app.engine.collectPluginStates(store.project);
+    const saved = JSON.parse(app.serializeSong()).project.tracks.find(x => x.id === t.id).pluginState;
+    if (!saved || JSON.parse(atob(saved.data)).gain !== 0.5) return 'state not saved ' + JSON.stringify(saved);
+    const data = app.serializeSong();
+    store.load(JSON.parse(data).project);
+    await new Promise(r => setTimeout(r, 300));
+    await app.engine.whenLoaded();
+    const reopened = app.engine.nodes.get(t.id).instrument;
+    const back = JSON.parse(atob(await reopened.getState()));
+    if (back.gain !== 0.5) return 'state not restored ' + JSON.stringify(back);
+    // A crash restarts the helper and reloads the plugin.
+    window.host.plugins.send({ cmd: 'crash' });
+    await new Promise(r => setTimeout(r, 1500));
+    await app.engine.whenLoaded();
+    const after = app.engine.nodes.get(t.id).instrument;
+    if (!after?.selfScheduled || after === reopened) return 'not reloaded after crash';
+    const state2 = JSON.parse(atob(await after.getState()));
+    return 'ok export error ' + (exErr * 1000).toFixed(2) + ' ms, live error ' + (liveErr * 1000).toFixed(2) + ' ms, underruns ' + inst.underruns + ', settings saved and restored (gain ' + state2.gain + '), reloads after a crash';`);
 
   await check('piano roll follows the selected track and region', `
     store.dirty = false;

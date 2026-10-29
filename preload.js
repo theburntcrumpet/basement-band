@@ -20,4 +20,11 @@ contextBridge.exposeInMainWorld('host', {
   bootAudioMode: () => ipcRenderer.invoke('audio:boot-mode'),
   setTheme: theme => ipcRenderer.invoke('theme:set', theme),
   relaunch: () => ipcRenderer.invoke('app:relaunch'),
+  plugins: {
+    scan: () => ipcRenderer.invoke('plugins:scan'),
+    addFolder: () => ipcRenderer.invoke('plugins:folder-pick'),
+    send: msg => ipcRenderer.send('plugin:json', JSON.stringify(msg)),
+    render: bytes => ipcRenderer.send('plugin:render', bytes),
+    onMessage: cb => { ipcRenderer.on('plugin:msg', (_e, m) => cb(m)); },
+  },
 });

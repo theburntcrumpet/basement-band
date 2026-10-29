@@ -71,6 +71,9 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # VST3 hosting: the native helper and the bundled Dexed synth go into the installers.
+      - uses: ./.github/actions/plugin-host
+
       - name: Build installers
         run: npx electron-builder ${{ matrix.targets }} --publish never
 

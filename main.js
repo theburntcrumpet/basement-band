@@ -3,6 +3,7 @@ const { app, BrowserWindow, protocol, net, ipcMain, dialog, Menu, shell, nativeT
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
+const plugins = require('./plugin-host.js');
 
 const ROOT = __dirname;
 const SRC = path.join(ROOT, 'src');
@@ -127,6 +128,7 @@ function registerIpc(win) {
     const ok = p => before.has(p) || known.has(p) || known.has(path.dirname(p));
     s.sampleFolders = (s.sampleFolders || []).filter(ok);
     s.userInstruments = (s.userInstruments || []).filter(e => e && typeof e.path === 'string' && ok(e.path));
+    s.pluginFolders = current.pluginFolders || [];
     s.irFiles = (s.irFiles || []).filter(f => f && typeof f.path === 'string' && (before.has(f.path) || known.has(path.dirname(f.path))));
     await saveSettings(s);
   });
@@ -252,7 +254,27 @@ function registerIpc(win) {
     app.exit(0);
   });
   ipcMain.handle('shell:credits', () => shell.openPath(path.join(ASSETS, 'samples', 'CREDITS.md')));
+
+  // ---- plugins (VST3 / AU / LV2 via the native helper)
+  const send = m => { if (!win.isDestroyed()) win.webContents.send('plugin:msg', m); };
+  pluginHost = new plugins.HostProcess(send);
+  ipcMain.handle('plugins:scan', async () => {
+    const s = await loadSettings();
+    return plugins.scanPlugins(s.pluginFolders || [], p => send({ type: 'progress', ...p }));
+  });
+  ipcMain.handle('plugins:folder-pick', async () => {
+    const r = await dialog.showOpenDialog(win, { title: 'Add Plugin Folder', properties: ['openDirectory'] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const s = await loadSettings();
+    s.pluginFolders = [...new Set([...(s.pluginFolders || []), r.filePaths[0]])];
+    await saveSettings(s);
+    return r.filePaths[0];
+  });
+  ipcMain.on('plugin:json', (_e, text) => { if (typeof text === 'string') pluginHost.write('J', text); });
+  ipcMain.on('plugin:render', (_e, bytes) => { if (bytes instanceof Uint8Array || bytes instanceof ArrayBuffer) pluginHost.write('R', bytes); });
 }
+
+let pluginHost = null;
 
 async function createWindow() {
   allowSettingsRoots(await loadSettings());
@@ -301,6 +323,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => pluginHost?.stop());
 
 // Never leave the system's audio quantum changed after we exit.
 app.on('will-quit', e => {

@@ -18,7 +18,7 @@ function peakMap(buf) {
   return peakMaps.get(buf);
 }
 const CYCLE_STRIP_H = 15;
-const CAT_ICONS = { 'My Instruments': '🎼', Keyboards: '🎹', Bass: '🎸', Guitar: '🎸', Strings: '🎻', Brass: '🎺', Woodwinds: '🎷', Mallets: '🔔', Synth: '🎛️', 'Drum Kits': '🥁' };
+const CAT_ICONS = { 'My Instruments': '🎼', Plugins: '🎛️', Keyboards: '🎹', Bass: '🎸', Guitar: '🎸', Strings: '🎻', Brass: '🎺', Woodwinds: '🎷', Mallets: '🔔', Synth: '🎛️', 'Drum Kits': '🥁' };
 
 export function trackIcon(track) {
   if (track.type === 'audio') return '🎤';

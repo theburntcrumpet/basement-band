@@ -3,6 +3,7 @@
 import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate, trackForPart, uid, barBeats, changeTimeSig, splitRegion } from './state.js';
 import { Engine, renderProject, songEnd, expandRegion, sourceSpb } from './engine/engine.js';
 import { getInstrument, isKit, loadBuffer } from './engine/instruments.js';
+import { scanPlugins, bridge } from './engine/plugins.js';
 import { setLibrary, inspect, registerDefs, exportDefs, INSTRUMENT_FILE } from './engine/user-instruments.js';
 import { toBase64, fromBase64 } from './engine/wav.js';
 import { encodeFlac } from './engine/formats/flac.js';
@@ -62,8 +63,45 @@ class App {
     this.wireMidi();
     this.library.render();
     this.library.loadUserFolders();
+    this.wirePlugins();
     this.onChange();
     this.tick();
+  }
+
+  // ------------------------------------------------------------ plugins
+
+  wirePlugins() {
+    bridge.addEventListener('progress', e => {
+      this.pluginScanText = `Checking plugins… ${e.detail.done + 1} of ${e.detail.total} (${e.detail.file})`;
+      if (this.library.tab === 'sounds') this.library.render();
+    });
+    // If a plugin crashes the helper, restart it and reload every plugin from its last saved settings.
+    bridge.addEventListener('crash', () => {
+      for (const node of this.engine.nodes.values()) if (node.instrument?.selfScheduled) node.instrumentId = null;
+      toast('A plugin crashed. Plugins have been reloaded (changes since the last save may be lost).', 6000);
+      setTimeout(() => this.engine.sync(store.project), 500);
+    });
+    this.rescanPlugins();
+  }
+
+  async rescanPlugins() {
+    this.pluginScanText = 'Looking for plugins…';
+    await scanPlugins();
+    this.pluginScanText = '';
+    this.library.render();
+    this.smart?.render?.();
+  }
+
+  async addPluginFolder() {
+    if (await window.host?.plugins?.addFolder()) this.rescanPlugins();
+  }
+
+  async openPluginWindow(track) {
+    try {
+      if (!(await this.engine.openPluginEditor(track.id))) toast('The plugin is still loading');
+    } catch (err) {
+      toast('Couldn\'t open the plugin window: ' + err.message);
+    }
   }
 
   // ------------------------------------------------------------ rendering
@@ -1051,6 +1089,8 @@ class App {
   }
 
   async save(saveAs = false) {
+    // Plugins keep their settings to themselves until asked.
+    await this.engine.collectPluginStates(store.project);
     const data = this.serializeSong();
     if (!window.host) {
       download(new Blob([data], { type: 'application/json' }), 'My Song.bband');
@@ -1176,7 +1216,10 @@ class App {
       bar.style.width = '15%';
       await this.engine.prepareAudio(p);
       await this.engine.prepareIRs(p);
-      const buffer = await renderProject(p, this.engine.audioPool, { ...range, sampleRate, bufferFor: this.engine.bufferFor });
+      status.textContent = 'Rendering plugins…';
+      const pluginAudio = await this.engine.renderPlugins(p, { ...range, sampleRate });
+      status.textContent = 'Mixing your song…';
+      const buffer = await renderProject(p, this.engine.audioPool, { ...range, sampleRate, bufferFor: this.engine.bufferFor, pluginAudio });
       status.textContent = `Encoding ${fmt.ext.toUpperCase()}…`;
       const bytes = await encodeAudio(buffer, formatId, f => { bar.style.width = `${15 + f * 85}%`; });
       close();

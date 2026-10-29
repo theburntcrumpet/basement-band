@@ -1,6 +1,6 @@
 # Basement Band
 
-A simple, GarageBand-style music studio for Windows and Linux. It ships with a full band of
+A simple, GarageBand-style music studio for Windows, Linux and macOS. It ships with a full band of
 instruments, a drummer that writes its own parts, a loop library and a sample browser, so you can
 open it and start making music.
 
@@ -11,6 +11,8 @@ open it and start making music.
 - **Session Band**: pick a style (Pop, Rock, Funk, Lo-Fi, Jazz Trio, House, Ballad, Reggae, Country,
   Synthwave) and a chord progression, and it writes drums, bass, keys, guitar, pads and arps. Every
   part is an ordinary track you can edit, re-voice or re-roll.
+- **Plugins**: VST3 instruments on Windows, macOS and Linux (plus AU and LV2), with the Dexed FM
+  synth included. See [Plugins](#plugins-vst3).
 - **Song sections**: mark Intro/Verse/Chorus… on the Arrangement strip (＋). Right-click a section to
   duplicate it (everything later moves along), delete it (the gap closes), loop it, or select its
   regions; double-click to rename; drag its left edge to move it.
@@ -84,8 +86,34 @@ Sounds → **My Instruments** → **＋ SF2 / SFZ…** or **＋ Folder…** (or 
 - Songs store references to the files, not the samples. On another machine, re-import the same
   files; until then the tracks play a stand-in synth.
 
-The engine is built around *instrument sources* (`src/engine/user-instruments.js`), so a native
-VST3/CLAP plugin host could be added later as another source kind.
+## Plugins (VST3)
+
+Sounds → **Plugins** lists the instrument plugins installed on your computer: VST3 on Windows,
+macOS and Linux, plus Audio Units on macOS and LV2 on Linux. Click one to use it on a track, and
+**Open Plugin Window** (in Smart Controls) shows the plugin's own interface. Plugin settings are
+saved in the song. **⟳ Rescan** finds newly installed plugins; **＋ Folder…** adds a folder outside
+the usual locations.
+
+Basement Band ships with **[Dexed](https://github.com/asb2m10/dexed)**, a free FM synth modelled on
+the Yamaha DX7 (GPL-3.0), so there is always a plugin to play.
+
+How it works: plugins run in a separate helper program (`native/plugin-host`, C++/JUCE), so a
+crashing plugin can't take the app down; it is restarted and the plugins are reloaded. The helper
+renders each plugin slightly ahead of the audio clock and streams the audio into the track, so
+plugin tracks play sample-accurately in time with everything else and go through the same mixer,
+effects and automation. Playing a plugin live from a keyboard adds ~30–50 ms (the render-ahead,
+depending on Settings → Audio performance). Exports render plugins faster than real time.
+
+Building the helper locally needs CMake and a C++17 compiler (on Linux also the ALSA, FreeType and
+X11 development packages):
+
+```sh
+npm run build:plugin-host    # downloads JUCE 9 and builds native/plugin-host/build/...
+npm run fetch-plugins        # downloads Dexed into plugins/
+npm run check:plugin-host    # loads Dexed in the helper and plays a note
+```
+
+Without the helper the app still runs; the Plugins section just says plugin support isn't included.
 
 ## Build installers
 
@@ -96,7 +124,8 @@ npm run dist:mac     # dist/*.dmg and *.zip for Apple Silicon and Intel (needs a
 ```
 
 Windows builds can be made on Linux if `wine` is installed. Installers bundle the sample library,
-so the app works offline.
+so the app works offline. To include plugin support, build the helper and fetch Dexed first (see
+Plugins); the release workflow does this on each platform.
 
 ## Releases
 
@@ -126,6 +155,10 @@ right-click the app and choose **Open** the first time (or run `xattr -cr "/Appl
   the meter can't yet. An audio clip spanning a tempo change follows the tempo where it starts.
 - **Time-stretching** (WSOLA) keeps pitch and timing but can smear very dense or percussive audio at
   big tempo changes (more than about ±30%).
+- **Plugins:** instrument plugins only for now. Effect plugins (on a track's insert) aren't
+  supported yet. Plugin windows open as separate windows, not inside the app. Playing a plugin live
+  has a little more latency than built-in sounds. VST2 isn't supported (its SDK is no longer
+  available), and neither is CLAP yet.
 - **Automation covers the mixer settings** (volume, pan, reverb, echo, tone, EQ), not effect or amp
   knobs yet, and lanes don't move with regions.
 - **Songs embed their recordings** (as lossless FLAC, about half the size of WAV) inside the `.bband`
@@ -153,9 +186,9 @@ Roughly in priority order:
 5. ~~Tempo changes~~ within a song (done); time-signature changes still to do.
 6. ~~Smaller song files~~ (recordings now stored as FLAC); optionally keep audio in a folder beside
    the song.
-7. **Native low-latency audio helper** (JACK/PipeWire on Linux, ASIO/WASAPI exclusive on Windows)
-   running the amp sim for sub-10 ms guitar monitoring; the same helper would host
-   **VST3/CLAP plugins** as a new instrument source.
+7. ~~VST3 instrument plugins~~ (done, with Dexed bundled). Next: **effect plugins** on track
+   inserts, CLAP, and moving live audio (input monitoring, the amp sim) into the native helper
+   with JACK/PipeWire/ASIO/WASAPI for sub-10 ms guitar monitoring.
 8. ~~More amp models and cabinet IR loading~~ (done: Vintage and Metal, four cabinets, custom IRs).
 9. ~~macOS builds~~ (done, ad-hoc signed; untested). Still to do: paid code signing/notarization.
 10. ~~Arrangement markers~~ (done: song sections with duplicate/delete/loop). Next: let the Session
@@ -195,8 +228,12 @@ src/music/theory.js         notes, chords, roman numerals, voicings
 src/music/band.js           styles + drum/bass/comping generators
 src/engine/instruments.js   instrument library (samplers, synth presets, drum kits)
 src/engine/engine.js        mixer graph, scheduling, recording, offline export
+src/engine/plugins.js       plugin instruments: scanning, streaming from the helper, export
+plugin-host.js              main-process side of plugin hosting (scan, helper process)
+native/plugin-host/         the native plugin helper (C++/JUCE, AGPL-3.0)
 src/ui/*                    arrange view, editors, smart controls, library
 scripts/fetch-samples.mjs   downloads the sample library
+scripts/fetch-plugins.mjs   downloads the bundled plugins (Dexed)
 test/                       unit tests and headless end-to-end checks
 ```
 
@@ -205,7 +242,9 @@ test/                       unit tests and headless end-to-end checks
 ```sh
 npm test         # music theory and generator unit tests
 npm run smoke    # end-to-end flows in a hidden app window (Linux, needs xvfb-run; forces X11 so
-                 # nothing opens on a Wayland desktop)
+                 # nothing opens on a Wayland desktop). Plugins are exercised with a stand-in
+                 # helper (test/fake-plugin-host.cjs), so no native build is needed
+npm run check:plugin-host  # the real helper with Dexed (CI runs this on Linux, Windows and macOS)
 npm run levels   # renders every instrument and prints its loudness
 npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses FluidR3_GM.sf2
                            # if installed; set BB_SFZ_TEST_DIR to a folder of SFZ libraries)
@@ -213,7 +252,9 @@ npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses
 
 ## Licenses
 
-The code is MIT licensed. MP3 export uses LAME via `@breezystack/lamejs` (LGPL-3.0), shipped as a
+The code is MIT licensed, except the plugin helper in `native/plugin-host`, which is built with
+JUCE and is therefore AGPL-3.0; it is a separate program the app talks to over pipes. The bundled
+Dexed plugin is GPL-3.0 (source: https://github.com/asb2m10/dexed). MP3 export uses LAME via `@breezystack/lamejs` (LGPL-3.0), shipped as a
 separate, replaceable file. The sample library is not covered by MIT. It comes from the Salamander
 Grand Piano, VSCO 2 Community Edition, Karoryfer, University of Iowa MIS and Freesound (CC-BY 3.0),
 plus the Hydrogen drum kits (GPL). See `assets/samples/CREDITS.md`, which the app also opens from

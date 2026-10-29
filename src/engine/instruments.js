@@ -6,6 +6,7 @@ import { INSTRUMENT_NOTES, PIANO_NOTES, VELOCITY_LAYERS, TR808_NAMES, FREESOUND_
 import { noteToMidi, midiToNote } from '../music/theory.js';
 import { getUserDef, loadUserInstrument, USER_CAT } from './user-instruments.js';
 import { MultiSampler } from './multisampler.js';
+import { getPluginDef } from './plugins.js';
 
 const Tone = window.Tone;
 const SAMPLE_ROOT = 'samples/';
@@ -71,7 +72,7 @@ export const INSTRUMENTS = [
 
 export const INSTRUMENT_BY_ID = Object.fromEntries(INSTRUMENTS.map(i => [i.id, i]));
 // Built-in sounds first, then the user's own (SoundFonts, SFZ, sample folders).
-export const getInstrument = id => INSTRUMENT_BY_ID[id] || getUserDef(id) || INSTRUMENT_BY_ID['grand-piano'];
+export const getInstrument = id => INSTRUMENT_BY_ID[id] || getUserDef(id) || getPluginDef(id) || INSTRUMENT_BY_ID['grand-piano'];
 export const isKit = id => getInstrument(id).type === 'kit' || !!getInstrument(id).isKit;
 
 // ------------------------------------------------------------------ drum kit maps
@@ -394,6 +395,7 @@ function makeSynthKit(out) {
 // Builds a playable instrument in the current Tone context from preloaded buffers.
 export function createInstrument(id, buffers = {}) {
   const def = getInstrument(id);
+  if (def.type === 'plugin') throw new Error('Plugins are loaded by the engine (PluginInstrument)');
   if (def.type === 'user') return new MultiSampler(buffers, def.volume);
   if (def.type === 'kit') return new DrumKit(def, buffers);
   if (def.type === 'sampler') {

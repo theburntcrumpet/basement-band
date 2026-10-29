@@ -7,6 +7,7 @@ import { EQ_BANDS } from './eq.js';
 import { FxSlot } from './effects.js';
 import { AmpSlot, irBuffers } from './amp.js';
 import { AUTO_PARAMS, curve, valueAt, staticValue, rampsFrom } from './automation.js';
+import { PluginInstrument, pluginsReady, renderPluginTrack, bridge } from './plugins.js';
 
 const Tone = window.Tone;
 const PPQ = 192;
@@ -16,7 +17,7 @@ export const ticks = beats => `${Math.round(beats * PPQ)}i`;
 
 // Tone's addAudioWorkletModule() keeps a single promise per context, so only the first module ever
 // loads. Load each of ours directly, once per context (live and every offline render).
-const WORKLETS = ['recorder', 'amp', 'master'];
+const WORKLETS = ['recorder', 'amp', 'master', 'stream'];
 const loadedWorklets = new WeakMap();
 export async function loadWorklets(context = Tone.getContext()) {
   const raw = context.rawContext;
@@ -128,9 +129,9 @@ export class TrackNode {
     this.drive.wet.value = Math.min(1, d * 2);
   }
 
-  setInstrument(id, buffers) {
+  setInstrument(id, buffers, instrument = null) {
     const old = this.instrument;
-    this.instrument = createInstrument(id, buffers);
+    this.instrument = instrument || createInstrument(id, buffers);
     this.instrument.output.connect(this.input);
     this.instrumentId = id;
     if (old) {
@@ -234,8 +235,11 @@ function scheduleAutomation(transport, track, node, sec, { from, cycle, isRepeat
     const points = curve(track, p.key);
     if (!points.length) continue;
     const { param, map } = node.autoTarget(p.key);
+    // cancelAndHold, not cancelScheduledValues: the ramp arriving at this point ends exactly at `time`,
+    // and cancelling it would hold the previous point's value instead (offline renders schedule every
+    // event up front, so the ramp vanished from exports entirely).
     const play = r => time => {
-      param.cancelScheduledValues(time);
+      param.cancelAndHoldAtTime(time);
       param.setValueAtTime(map(r.v), time);
       if (r.to != null) param.linearRampToValueAtTime(map(r.toV), time + sec(r.at, r.to));
     };
@@ -307,6 +311,7 @@ export function scheduleProject(transport, project, nodes, audioPool, { from = 0
         }
         continue;
       }
+      if (node.instrument?.selfScheduled) continue; // plugins work out their own notes (see plugins.js)
       for (const n of expandRegion(region)) {
         const note = time => node.instrument?.play(n.n, sec(n.t, n.t + n.d), time, n.v);
         if (n.t >= from - 1e-6) transport.schedule(once(note), ticks(n.t));
@@ -389,6 +394,7 @@ export class Engine extends EventTarget {
     this.pending.set(trackId, id);
     this.dispatchEvent(new CustomEvent('loading', { detail: { trackId, loading: true } }));
     try {
+      if (id?.startsWith('plugin:')) return await this.loadPlugin(trackId, id);
       const res = await resolveInstrument(id);
       const node = this.nodes.get(trackId);
       if (node && this.pending.get(trackId) === id) {
@@ -407,6 +413,92 @@ export class Engine extends EventTarget {
       if (this.pending.get(trackId) === id) this.pending.delete(trackId);
       this.dispatchEvent(new CustomEvent('loading', { detail: { trackId, loading: false } }));
     }
+  }
+
+  // A plugin instrument, restored with the settings saved in the song. If it can't be loaded here
+  // (not installed, or no plugin support), a built-in synth stands in and the track keeps its plugin.
+  async loadPlugin(trackId, id) {
+    await pluginsReady;
+    const track = this.project?.tracks.find(t => t.id === trackId);
+    const def = getInstrument(id);
+    let instrument = null, problem = null;
+    if (def.missing) problem = `The plugin for "${track?.name || 'a track'}" isn't installed on this computer — playing a stand-in synth.`;
+    else {
+      try {
+        const state = track?.pluginState?.id === id ? track.pluginState.data : null;
+        instrument = await PluginInstrument.create(def, { state, title: `${def.name} — ${track?.name || ''}`, mode: this.mode });
+      } catch (err) {
+        problem = `Couldn't load the plugin ${def.name}: ${err.message}. Playing a stand-in synth.`;
+      }
+    }
+    const node = this.nodes.get(trackId);
+    if (!node || this.pending.get(trackId) !== id) { instrument?.dispose(); return; }
+    if (instrument) {
+      node.setInstrument(id, null, instrument);
+      if (this.playing && this.pluginAnchor) instrument.setPlayback(this.project, track, this.anchorNow(), this.cycle());
+    } else {
+      const fb = await resolveInstrument('electric-piano');
+      node.setInstrument(fb.id, fb.buffers);
+      this.dispatchEvent(new CustomEvent('warning', { detail: problem }));
+    }
+    node.instrumentId = id;
+  }
+
+  pluginInstruments() {
+    return [...this.nodes.entries()].filter(([, n]) => n.instrument?.selfScheduled).map(([trackId, n]) => ({ trackId, instrument: n.instrument }));
+  }
+
+  cycle() {
+    return this.project.cycle?.on ? this.project.cycle : null;
+  }
+
+  // Where the song is on the audio clock right now (plugins anchor their notes to this).
+  anchorNow() {
+    const time = Tone.immediate();
+    // Still counting in: the song starts where play() said it would.
+    if (this.startedAt && time < this.startedAt.time) return { frame: this.startedAt.time * Tone.getContext().sampleRate, beat: this.startedAt.beat };
+    return { frame: time * Tone.getContext().sampleRate, beat: this.transport.getTicksAtTime(time) / PPQ };
+  }
+
+  // Starts (or re-anchors) every plugin's song notes.
+  startPlugins(anchor) {
+    this.pluginAnchor = anchor;
+    for (const { trackId, instrument } of this.pluginInstruments()) {
+      const track = this.project.tracks.find(t => t.id === trackId);
+      if (track) instrument.setPlayback(this.project, track, anchor, this.cycle());
+    }
+  }
+
+  async openPluginEditor(trackId) {
+    const node = this.nodes.get(trackId);
+    const track = this.project.tracks.find(t => t.id === trackId);
+    if (!node?.instrument?.selfScheduled) return false;
+    await node.instrument.showEditor(`${getInstrument(track.instrument).name} — ${track.name}`);
+    return true;
+  }
+
+  // Copies each plugin's current settings into its track (before saving the song).
+  async collectPluginStates(project = this.project) {
+    for (const { trackId, instrument } of this.pluginInstruments()) {
+      const track = project.tracks.find(t => t.id === trackId);
+      if (!track || track.instrument !== instrument.def.id) continue;
+      const data = await instrument.getState();
+      if (data) track.pluginState = { id: track.instrument, data };
+    }
+  }
+
+  // Pre-renders plugin tracks for an export: trackId -> AudioBuffer.
+  async renderPlugins(project, { start = 0, end, tail = 2.5, sampleRate }) {
+    await this.collectPluginStates(project);
+    const out = new Map();
+    for (const track of project.tracks) {
+      if (!track.instrument?.startsWith('plugin:') || track.type === 'audio') continue;
+      const def = getInstrument(track.instrument);
+      if (def.missing || !(this.nodes.get(track.id)?.instrument?.selfScheduled)) continue;
+      const state = track.pluginState?.id === track.instrument ? track.pluginState.data : null;
+      out.set(track.id, await renderPluginTrack(def, state, project, track, { start, end: end ?? songEnd(project), tail, sampleRate }));
+    }
+    return out;
   }
 
   whenLoaded() {
@@ -428,6 +520,7 @@ export class Engine extends EventTarget {
 
   setPosition(beats) {
     this.transport.ticks = Math.max(0, Math.round(beats * PPQ));
+    if (this.playing) this.startPlugins({ frame: Tone.now() * Tone.getContext().sampleRate, beat: Math.max(0, beats) });
   }
 
   // Schedules everything from `from` (the playback start, or the current position for edits while playing).
@@ -527,6 +620,8 @@ export class Engine extends EventTarget {
     const cycle = this.project.cycle?.on ? this.project.cycle : null;
     const pass = this.loopCount;
     scheduleProject(this.transport, this.project, this.nodes, this.audioPool, { from, restartAt, cycle, isRepeat: () => this.loopCount > pass, active: this.audioSources, bufferFor: this.bufferFor });
+    // Edits while playing: plugins pick up the new notes from where the song is now.
+    if (live) this.startPlugins(this.anchorNow());
     const m = meter(this.project.timeSig);
     this.transport.scheduleRepeat(time => {
       if (!this.metronome) return;
@@ -554,6 +649,7 @@ export class Engine extends EventTarget {
     }
     this.startedAt = { time: at, beat: fromBeat };
     this.transport.start(at, ticks(fromBeat));
+    this.startPlugins({ frame: at * Tone.getContext().sampleRate, beat: fromBeat });
     this.setFxRunning(true);
     return at;
   }
@@ -582,6 +678,7 @@ export class Engine extends EventTarget {
     this.transport.stop();
     this.transport.cancel(0);
     this.stopAudio(Tone.now());
+    this.pluginAnchor = null;
     for (const node of this.nodes.values()) node.instrument?.stopAll(Tone.now());
   }
 
@@ -785,11 +882,14 @@ export class Engine extends EventTarget {
 
 // ------------------------------------------------------------------ offline export
 
-export async function renderProject(project, audioPool, { start = 0, end, tail = 2.5, sampleRate = Tone.getContext().sampleRate, bufferFor = null } = {}) {
+//   pluginAudio: trackId -> AudioBuffer, plugin tracks pre-rendered by Engine.renderPlugins()
+export async function renderProject(project, audioPool, { start = 0, end, tail = 2.5, sampleRate = Tone.getContext().sampleRate, bufferFor = null, pluginAudio = new Map() } = {}) {
   const stop = end ?? songEnd(project);
   const duration = Math.max(0.5, secBetween(project, start, stop) + tail);
   const loaded = new Map();
-  await Promise.all(project.tracks.filter(t => t.type !== 'audio').map(async t => loaded.set(t.id, await resolveInstrument(t.instrument))));
+  // Plugin tracks without pre-rendered audio (not installed) use the same stand-in as live playback.
+  const instrumentFor = t => (t.instrument?.startsWith('plugin:') ? 'electric-piano' : t.instrument);
+  await Promise.all(project.tracks.filter(t => t.type !== 'audio' && !pluginAudio.has(t.id)).map(async t => loaded.set(t.id, await resolveInstrument(instrumentFor(t)))));
 
   const rendered = await Tone.Offline(async ({ transport }) => {
     // The master dynamics and the amp's noise gate are AudioWorklets; the offline context needs its own copies.
@@ -803,7 +903,13 @@ export async function renderProject(project, audioPool, { start = 0, end, tail =
     for (const track of project.tracks) {
       const node = new TrackNode(buses);
       node.apply(track, isMuted(project, track), start);
-      if (track.type !== 'audio') {
+      if (pluginAudio.has(track.id)) {
+        // Already rendered from `start`: play it from the top, and skip the track's notes.
+        const output = new Tone.Gain(1);
+        const src = new Tone.ToneBufferSource({ url: pluginAudio.get(track.id) }).connect(output);
+        src.start(0);
+        node.setInstrument(track.instrument, null, { selfScheduled: true, output, stopAll() {}, dispose() { src.dispose(); output.dispose(); } });
+      } else if (track.type !== 'audio') {
         const res = loaded.get(track.id);
         node.setInstrument(res.id, res.buffers);
       }

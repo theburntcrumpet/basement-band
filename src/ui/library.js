@@ -3,13 +3,14 @@
 import { h, toast } from './dom.js';
 import { store } from '../state.js';
 import { INSTRUMENTS, CATEGORIES, builtinSamples } from '../engine/instruments.js';
+import { pluginList, pluginStatus } from '../engine/plugins.js';
 import { STYLES, PARTS, PART_LABELS, PROGRESSION_PRESETS, generate, partInstrument } from '../music/band.js';
 import { parseProgression } from '../music/theory.js';
 import { meter, TIME_SIGNATURES } from '../music/meter.js';
 import { getLibrary, entryDefs } from '../engine/user-instruments.js';
 import { GEN_FX } from '../engine/fxgen.js';
 
-const CAT_ICON = { Keyboards: '🎹', Bass: '🎸', Guitar: '🎸', Strings: '🎻', Brass: '🎺', Woodwinds: '🎷', Mallets: '🔔', Synth: '🎛️', 'Drum Kits': '🥁' };
+const CAT_ICON = { Plugins: '🎛️',  Keyboards: '🎹', Bass: '🎸', Guitar: '🎸', Strings: '🎻', Brass: '🎺', Woodwinds: '🎷', Mallets: '🔔', Synth: '🎛️', 'Drum Kits': '🥁' };
 
 // The loop library: every style × part, in simple and busy flavours. All MIDI, so they follow the song key.
 export const LOOPS = Object.entries(STYLES).flatMap(([styleId, style]) =>
@@ -101,6 +102,7 @@ export class Library {
     if (!track) wrap.append(h('div', { class: 'lib-note' }, 'Click a sound to create a new track with it.'));
     else if (track.type === 'audio') wrap.append(h('div', { class: 'lib-note' }, 'Audio tracks play recordings and samples. Select an instrument track to change its sound, or click a sound to add a new track.'));
     wrap.append(this.renderMyInstruments(track));
+    wrap.append(this.renderPlugins(track));
     for (const cat of CATEGORIES) {
       const items = INSTRUMENTS.filter(i => i.cat === cat);
       wrap.append(h('div', { class: 'lib-section' },
@@ -131,6 +133,40 @@ export class Library {
       return section;
     }
     for (const entry of entries) section.append(this.renderEntry(entry, track));
+    return section;
+  }
+
+  // VST3 (and AU/LV2) instruments found on this computer, plus the bundled ones.
+  renderPlugins(track) {
+    const status = pluginStatus();
+    const section = h('div', { class: 'lib-section' },
+      h('h4', {}, 'Plugins'),
+      status.available ? h('div', { class: 'btn-row' },
+        h('button', { class: 'text', title: 'Look for newly installed plugins', onclick: () => this.app.rescanPlugins() }, '⟳ Rescan'),
+        h('button', { class: 'text', title: 'Also look for plugins in another folder', onclick: () => this.app.addPluginFolder() }, '＋ Folder…')) : null);
+    if (!status.scanned) {
+      section.append(h('div', { class: 'lib-note' }, this.app.pluginScanText || 'Looking for plugins…'));
+      return section;
+    }
+    if (!status.available) {
+      section.append(h('div', { class: 'lib-note' }, 'Plugin support isn\'t included in this build of Basement Band.'));
+      return section;
+    }
+    const list = pluginList().filter(d => d.isInstrument);
+    if (!list.length) section.append(h('div', { class: 'lib-note' }, 'No instrument plugins found. Install VST3 instruments in the usual place, or add their folder.'));
+    for (const def of list) {
+      section.append(h('div', {
+        class: 'lib-item' + (track?.instrument === def.id ? ' on' : ''),
+        draggable: true,
+        ondragstart: e => e.dataTransfer.setData('application/x-bb', JSON.stringify({ kind: 'instrument', id: def.id })),
+        onclick: () => this.app.chooseInstrument(def.id),
+        title: `${def.name} by ${def.manufacturer || 'unknown'} (${def.format})${def.bundled ? ' — comes with Basement Band' : ''}\n${def.desc.file}`,
+      },
+      h('span', { class: 'icon' }, '🎛️'),
+      h('span', { class: 'name' }, def.bundled && /dexed/i.test(def.name) ? 'Dexed FM Synth' : def.name),
+      h('span', { class: 'meta' }, def.bundled ? 'included' : def.format)));
+    }
+    if (status.failed?.length) section.append(h('div', { class: 'lib-note', title: status.failed.join('\n') }, `${status.failed.length} plugin file(s) couldn't be loaded and were skipped.`));
     return section;
   }
 

@@ -1,0 +1,522 @@
+// bb-plugin-host — Basement Band's plugin helper.
+//
+//   bb-plugin-host --find [extra folders...]   lists plugin files/ids as JSON: [{format, file}]
+//   bb-plugin-host --scan <format> <file>      describes the plugins in one file as JSON
+//   bb-plugin-host                             serves render requests over stdin/stdout
+//
+// Messages in both directions are framed as  [u32 length][u8 type][payload], little-endian.
+//   'J'  UTF-8 JSON (commands from the app; replies and events from us)
+//   'R'  render request:  u32 seq, u32 inst, u32 frames, f64 bpm, f64 ppq, u8 playing, 3 pad,
+//                         u32 count, then count × {u32 offset, u8 status, u8 data1, u8 data2, u8 pad}
+//   'A'  rendered audio:  u32 seq, u32 inst, u32 frames, u32 channels, then planar float32
+//
+// Rendering happens on the stdin thread, in order, so the app can stream ahead of playback.
+// Loading, editor windows and state run on the message thread, as plugins expect.
+
+#include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_gui_basics/juce_gui_basics.h>
+
+#include <atomic>
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <mutex>
+
+#if JUCE_WINDOWS
+ #define NOMINMAX
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+#else
+ #include <unistd.h>
+#endif
+
+using namespace juce;
+
+//==============================================================================
+// Raw stdio (works the same for console and windowed builds on every platform).
+
+static bool readExact (void* dst, size_t n)
+{
+    auto* p = static_cast<char*> (dst);
+    while (n > 0)
+    {
+       #if JUCE_WINDOWS
+        DWORD got = 0;
+        if (! ReadFile (GetStdHandle (STD_INPUT_HANDLE), p, (DWORD) n, &got, nullptr) || got == 0)
+            return false;
+       #else
+        auto got = ::read (0, p, n);
+        if (got <= 0)
+            return false;
+       #endif
+        p += got;
+        n -= (size_t) got;
+    }
+    return true;
+}
+
+static std::mutex outLock;
+
+static void writeExact (const void* src, size_t n)
+{
+    auto* p = static_cast<const char*> (src);
+    while (n > 0)
+    {
+       #if JUCE_WINDOWS
+        DWORD put = 0;
+        if (! WriteFile (GetStdHandle (STD_OUTPUT_HANDLE), p, (DWORD) n, &put, nullptr) || put == 0)
+            return;
+       #else
+        auto put = ::write (1, p, n);
+        if (put <= 0)
+            return;
+       #endif
+        p += put;
+        n -= (size_t) put;
+    }
+}
+
+static void sendFrame (char type, const void* data, size_t size)
+{
+    std::lock_guard<std::mutex> lock (outLock);
+    const uint32_t len = (uint32_t) size + 1;
+    writeExact (&len, 4);
+    writeExact (&type, 1);
+    if (size > 0)
+        writeExact (data, size);
+}
+
+static void sendJson (const var& v)
+{
+    auto text = JSON::toString (v, true);
+    sendFrame ('J', text.toRawUTF8(), text.getNumBytesAsUTF8());
+}
+
+static var object (std::initializer_list<std::pair<const char*, var>> props)
+{
+    auto* o = new DynamicObject();
+    for (auto& [k, v] : props)
+        o->setProperty (k, v);
+    return var (o);
+}
+
+static void reply (const var& req, bool ok, const String& error = {}, var extra = {})
+{
+    auto out = extra.isObject() ? extra : object ({});
+    out.getDynamicObject()->setProperty ("req", req);
+    out.getDynamicObject()->setProperty ("ok", ok);
+    if (error.isNotEmpty())
+        out.getDynamicObject()->setProperty ("error", error);
+    sendJson (out);
+}
+
+//==============================================================================
+
+static void addFormats (AudioPluginFormatManager& m)
+{
+    addDefaultFormatsToManager (m);
+}
+
+static var describe (const PluginDescription& d)
+{
+    return object ({
+        { "name", d.name },
+        { "manufacturer", d.manufacturerName },
+        { "category", d.category },
+        { "format", d.pluginFormatName },
+        { "file", d.fileOrIdentifier },
+        { "id", d.createIdentifierString() },
+        { "isInstrument", d.isInstrument },
+        { "version", d.version },
+        { "xml", d.createXml()->toString (XmlElement::TextFormat().singleLine().withoutHeader()) },
+    });
+}
+
+//==============================================================================
+
+struct PlayHead final : public AudioPlayHead
+{
+    double bpm = 120, ppq = 0, rate = 48000;
+    int64 samples = 0;
+    bool playing = false;
+
+    Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo info;
+        info.setBpm (bpm);
+        info.setPpqPosition (ppq);
+        info.setTimeInSamples (samples);
+        info.setTimeInSeconds ((double) samples / rate);
+        info.setIsPlaying (playing);
+        return info;
+    }
+};
+
+struct Instance;
+
+struct EditorWindow final : public DocumentWindow
+{
+    EditorWindow (Instance& o, const String& title, AudioProcessorEditor* editor)
+        : DocumentWindow (title, Colours::black, DocumentWindow::closeButton | DocumentWindow::minimiseButton),
+          owner (o)
+    {
+        setUsingNativeTitleBar (true);
+        setContentOwned (editor, true);
+        setResizable (editor->isResizable(), false);
+        centreWithSize (getWidth(), getHeight());
+    }
+
+    void closeButtonPressed() override;
+
+    Instance& owner;
+};
+
+// Members are destroyed bottom-up: the editor window goes before the plugin, which goes before the
+// play head it points at.
+struct Instance
+{
+    uint32_t id = 0;
+    PlayHead head;
+    AudioBuffer<float> buffer;
+    MidiBuffer midi;
+    std::unique_ptr<AudioPluginInstance> plugin;
+    std::unique_ptr<EditorWindow> window;
+    int maxBlock = 2048;
+    std::mutex lock;   // held while rendering, so state changes and unloading wait for a block to finish
+};
+
+void EditorWindow::closeButtonPressed()
+{
+    setVisible (false);
+    sendJson (object ({ { "event", "editorClosed" }, { "inst", (int) owner.id } }));
+}
+
+//==============================================================================
+
+class Host final : private Thread
+{
+public:
+    Host() : Thread ("bb-plugin-host stdin")
+    {
+        addFormats (formats);
+        startThread (Priority::highest);
+    }
+
+    ~Host() override
+    {
+        stopThread (200);
+        std::lock_guard<std::mutex> l (mapLock);
+        instances.clear();
+    }
+
+private:
+    AudioPluginFormatManager formats;
+    std::mutex mapLock;
+    std::map<uint32_t, std::shared_ptr<Instance>> instances;
+
+    std::shared_ptr<Instance> find (uint32_t id)
+    {
+        std::lock_guard<std::mutex> l (mapLock);
+        auto it = instances.find (id);
+        return it == instances.end() ? nullptr : it->second;
+    }
+
+    void run() override
+    {
+        std::vector<char> data;
+        while (! threadShouldExit())
+        {
+            uint32_t len = 0;
+            if (! readExact (&len, 4) || len == 0 || len > (64u << 20))
+                break;
+            data.resize (len);
+            if (! readExact (data.data(), len))
+                break;
+            const char type = data[0];
+            if (type == 'R')
+                render (data.data() + 1, len - 1);
+            else if (type == 'J')
+                command (JSON::parse (String::fromUTF8 (data.data() + 1, (int) len - 1)));
+        }
+        // The app closed our stdin (or went away): we're done.
+        MessageManager::callAsync ([] { JUCEApplicationBase::quit(); });
+    }
+
+    //==============================================================================
+    void render (const char* p, size_t size)
+    {
+        if (size < 36)
+            return;
+        auto u32 = [&] (size_t at) { uint32_t v; memcpy (&v, p + at, 4); return v; };
+        auto f64 = [&] (size_t at) { double v; memcpy (&v, p + at, 8); return v; };
+        const uint32_t seq = u32 (0), instId = u32 (4), frames = jmin (u32 (8), (uint32_t) (1 << 16));
+        const double bpm = f64 (12), ppq = f64 (20);
+        const bool playing = p[28] != 0;
+        const uint32_t count = u32 (32);
+        if (size < 36 + (size_t) count * 8)
+            return;
+
+        std::vector<float> out ((size_t) frames * 2, 0.0f);
+        if (auto inst = find (instId))
+        {
+            std::lock_guard<std::mutex> l (inst->lock);
+            if (inst->plugin != nullptr)
+                process (*inst, frames, bpm, ppq, playing, p + 36, count, out);
+        }
+
+        std::vector<char> msg (16 + out.size() * sizeof (float));
+        const uint32_t header[4] = { seq, instId, frames, 2 };
+        memcpy (msg.data(), header, 16);
+        memcpy (msg.data() + 16, out.data(), out.size() * sizeof (float));
+        sendFrame ('A', msg.data(), msg.size());
+    }
+
+    static void process (Instance& inst, uint32_t frames, double bpm, double ppq, bool playing,
+                         const char* events, uint32_t count, std::vector<float>& out)
+    {
+        auto& plugin = *inst.plugin;
+        const int channels = jmax (2, plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels());
+        const int outs = plugin.getTotalNumOutputChannels();
+        inst.head.bpm = bpm;
+        inst.head.playing = playing;
+        uint32_t done = 0, e = 0;
+        while (done < frames)
+        {
+            const int n = (int) jmin<uint32_t> (frames - done, (uint32_t) inst.maxBlock);
+            inst.buffer.setSize (channels, n, false, false, true);
+            inst.buffer.clear();
+            inst.midi.clear();
+            for (; e < count; ++e)
+            {
+                uint32_t offset;
+                memcpy (&offset, events + e * 8, 4);
+                if (offset >= done + (uint32_t) n)
+                    break;
+                const auto* b = reinterpret_cast<const uint8_t*> (events + e * 8 + 4);
+                const int size = (b[0] & 0xf0) == 0xc0 || (b[0] & 0xf0) == 0xd0 ? 2 : 3;
+                inst.midi.addEvent (b, size, (int) jmax<int64> (0, (int64) offset - done));
+            }
+            inst.head.ppq = ppq + (double) done / inst.head.rate * bpm / 60.0;
+            plugin.processBlock (inst.buffer, inst.midi);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const int src = outs == 0 ? -1 : jmin (ch, outs - 1);
+                if (src >= 0)
+                    memcpy (out.data() + (size_t) ch * frames + done, inst.buffer.getReadPointer (src), (size_t) n * sizeof (float));
+            }
+            inst.head.samples += n;
+            done += (uint32_t) n;
+        }
+    }
+
+    //==============================================================================
+    void command (const var& msg)
+    {
+        const String cmd = msg["cmd"];
+        const var req = msg["req"];
+        const auto instId = (uint32_t) (int) msg["inst"];
+
+        if (cmd == "load")
+        {
+            // Plugins are created on the message thread; renders before then are silent.
+            MessageManager::callAsync ([this, msg, req, instId]
+            {
+                PluginDescription desc;
+                auto xml = parseXML (msg["xml"].toString());
+                if (xml == nullptr || ! desc.loadFromXml (*xml))
+                    return reply (req, false, "Bad plugin description");
+                const double rate = msg["rate"];
+                const int block = jlimit (64, 8192, (int) msg.getProperty ("block", 2048));
+                String error;
+                auto plugin = formats.createPluginInstance (desc, rate, block, error);
+                if (plugin == nullptr)
+                    return reply (req, false, error.isNotEmpty() ? error : "The plugin could not be loaded");
+                auto inst = std::make_shared<Instance>();
+                inst->id = instId;
+                inst->maxBlock = block;
+                inst->head.rate = rate;
+                plugin->disableNonMainBuses();
+                plugin->setPlayHead (&inst->head);
+                plugin->setNonRealtime (msg.getProperty ("offline", false));
+                plugin->prepareToPlay (rate, block);
+                const String state = msg["state"];
+                if (state.isNotEmpty())
+                {
+                    MemoryBlock mb;
+                    if (mb.fromBase64Encoding (state))
+                        plugin->setStateInformation (mb.getData(), (int) mb.getSize());
+                }
+                inst->plugin = std::move (plugin);
+                const auto latency = inst->plugin->getLatencySamples();
+                const bool hasEditor = inst->plugin->hasEditor();
+                const auto outs = inst->plugin->getTotalNumOutputChannels();
+                {
+                    std::lock_guard<std::mutex> l (mapLock);
+                    instances[instId] = inst;
+                }
+                reply (req, true, {}, object ({ { "latency", latency }, { "hasEditor", hasEditor }, { "outputs", outs } }));
+            });
+        }
+        else if (cmd == "unload")
+        {
+            MessageManager::callAsync ([this, instId]
+            {
+                std::shared_ptr<Instance> inst;
+                {
+                    std::lock_guard<std::mutex> l (mapLock);
+                    auto it = instances.find (instId);
+                    if (it == instances.end())
+                        return;
+                    inst = it->second;
+                    instances.erase (it);
+                }
+                inst->window.reset();
+                std::lock_guard<std::mutex> l (inst->lock);
+                inst->plugin->releaseResources();
+                inst->plugin.reset();
+            });
+        }
+        else if (cmd == "show" || cmd == "hide")
+        {
+            const String title = msg["title"];
+            MessageManager::callAsync ([this, cmd, instId, title, req]
+            {
+                auto inst = find (instId);
+                if (inst == nullptr)
+                    return reply (req, false, "No such plugin");
+                if (cmd == "hide")
+                {
+                    if (inst->window != nullptr)
+                        inst->window->setVisible (false);
+                    return reply (req, true);
+                }
+                if (inst->window == nullptr)
+                {
+                    auto* editor = inst->plugin->hasEditor() ? inst->plugin->createEditorIfNeeded() : nullptr;
+                    if (editor == nullptr)
+                        editor = new GenericAudioProcessorEditor (*inst->plugin);
+                    inst->window = std::make_unique<EditorWindow> (*inst, title, editor);
+                }
+                if (title.isNotEmpty())
+                    inst->window->setName (title);
+                inst->window->setVisible (true);
+                inst->window->toFront (true);
+                reply (req, true);
+            });
+        }
+        else if (cmd == "getState")
+        {
+            MessageManager::callAsync ([this, instId, req]
+            {
+                auto inst = find (instId);
+                if (inst == nullptr)
+                    return reply (req, false, "No such plugin");
+                MemoryBlock mb;
+                inst->plugin->getStateInformation (mb);
+                reply (req, true, {}, object ({ { "state", mb.toBase64Encoding() } }));
+            });
+        }
+        else if (cmd == "setState")
+        {
+            const String state = msg["state"];
+            MessageManager::callAsync ([this, instId, state, req]
+            {
+                auto inst = find (instId);
+                MemoryBlock mb;
+                if (inst == nullptr || ! mb.fromBase64Encoding (state))
+                    return reply (req, false, "No such plugin");
+                std::lock_guard<std::mutex> l (inst->lock);
+                inst->plugin->setStateInformation (mb.getData(), (int) mb.getSize());
+                reply (req, true);
+            });
+        }
+        else if (cmd == "reset")
+        {
+            // All notes off and clear tails (after Stop, or before rendering from a new position).
+            if (auto inst = find (instId))
+            {
+                std::lock_guard<std::mutex> l (inst->lock);
+                inst->plugin->reset();
+                inst->head.samples = 0;
+            }
+            reply (req, true);
+        }
+        else if (cmd == "ping")
+        {
+            reply (req, true, {}, object ({ { "version", JUCE_APPLICATION_VERSION_STRING } }));
+        }
+    }
+};
+
+//==============================================================================
+
+class App final : public JUCEApplication
+{
+public:
+    const String getApplicationName() override       { return JUCE_APPLICATION_NAME_STRING; }
+    const String getApplicationVersion() override    { return JUCE_APPLICATION_VERSION_STRING; }
+    bool moreThanOneInstanceAllowed() override       { return true; }
+
+    void initialise (const String&) override
+    {
+        auto args = getCommandLineParameterArray();
+        if (args.contains ("--find"))
+            return finish (find (args));
+        if (args.contains ("--scan"))
+            return finish (scan (args));
+        host = std::make_unique<Host>();
+    }
+
+    void shutdown() override { host.reset(); }
+    void systemRequestedQuit() override { quit(); }
+    void anotherInstanceStarted (const String&) override {}
+
+private:
+    std::unique_ptr<Host> host;
+
+    void finish (const String& text)
+    {
+        auto out = text + "\n";
+        writeExact (out.toRawUTF8(), out.getNumBytesAsUTF8());
+        setApplicationReturnValue (0);
+        quit();
+    }
+
+    static String find (const StringArray& args)
+    {
+        AudioPluginFormatManager formats;
+        addFormats (formats);
+        Array<var> out;
+        for (auto* format : formats.getFormats())
+        {
+            auto paths = format->getDefaultLocationsToSearch();
+            for (int i = args.indexOf ("--find") + 1; i < args.size(); ++i)
+                if (File::isAbsolutePath (args[i]) && File (args[i]).exists())
+                    paths.add (File (args[i]));
+            for (auto& f : format->searchPathsForPlugins (paths, true, false))
+                out.add (object ({ { "format", format->getName() }, { "file", f } }));
+        }
+        return JSON::toString (var (out), true);
+    }
+
+    static String scan (const StringArray& args)
+    {
+        const int at = args.indexOf ("--scan");
+        const String formatName = args[at + 1], file = args[at + 2];
+        AudioPluginFormatManager formats;
+        addFormats (formats);
+        Array<var> out;
+        for (auto* format : formats.getFormats())
+        {
+            if (format->getName() != formatName)
+                continue;
+            OwnedArray<PluginDescription> found;
+            format->findAllTypesForFile (found, file);
+            for (auto* d : found)
+                out.add (describe (*d));
+        }
+        return JSON::toString (var (out), true);
+    }
+};
+
+START_JUCE_APPLICATION (App)

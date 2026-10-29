@@ -33,8 +33,10 @@ export class SmartControls {
       onCommit: () => store.endGesture(),
     });
 
+    const isPlugin = track.type !== 'audio' && getInstrument(track.instrument).type === 'plugin' && !getInstrument(track.instrument).missing;
     const channel = h('div', {},
       h('h3', {}, track.type === 'audio' ? 'Audio Track' : getInstrument(track.instrument).name),
+      isPlugin ? h('button', { class: 'text accent', style: { marginBottom: '10px' }, title: 'Open the plugin\'s own controls', onclick: () => this.app.openPluginWindow(track) }, '🎛️ Open Plugin Window') : null,
       h('div', { class: 'knobs' },
         k('Volume', 'volume', { min: -40, max: 6, center: -4, format: v => v.toFixed(1) + ' dB' }),
         k('Pan', 'pan', { min: -1, max: 1, center: 0, format: v => Math.abs(v) < 0.02 ? 'C' : (v < 0 ? 'L' : 'R') + Math.round(Math.abs(v) * 100) }),

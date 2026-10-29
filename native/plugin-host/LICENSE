@@ -1,0 +1,13 @@
+bb-plugin-host — Basement Band's plugin helper
+Copyright (c) 2026 Basement Band contributors
+
+This program is built with the JUCE framework, which is licensed to open-source projects under the
+GNU Affero General Public License v3. This helper (the files in native/plugin-host) is therefore
+distributed under the GNU Affero General Public License, version 3 or later:
+https://www.gnu.org/licenses/agpl-3.0.html
+
+It runs as a separate program that Basement Band talks to over pipes; the rest of Basement Band
+remains under the MIT license (see the LICENSE file at the root of the repository).
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

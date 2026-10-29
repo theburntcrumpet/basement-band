@@ -13,10 +13,13 @@
     "test": "node --test test/*.test.mjs",
     "dist:linux": "electron-builder --linux AppImage deb",
     "dist:win": "electron-builder --win nsis portable",
-    "smoke": "env -u WAYLAND_DISPLAY BB_SMOKE=test/flows.cjs BB_TEST_ROOTS=/tmp/basement-band-test-ir xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox --use-fake-device-for-media-stream --use-fake-ui-for-media-stream",
+    "smoke": "env -u WAYLAND_DISPLAY BB_SMOKE=test/flows.cjs BB_TEST_ROOTS=/tmp/basement-band-test-ir BB_PLUGIN_HOST=test/fake-plugin-host.cjs xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox --use-fake-device-for-media-stream --use-fake-ui-for-media-stream",
     "levels": "env -u WAYLAND_DISPLAY BB_SMOKE=test/levels.cjs xvfb-run -a electron . --ozone-platform=x11 --no-sandbox",
     "test:instruments": "env -u WAYLAND_DISPLAY BB_SMOKE=test/instruments.cjs BB_TEST_ROOTS=assets/samples xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox",
-    "dist:mac": "electron-builder --mac dmg zip --x64 --arm64"
+    "dist:mac": "electron-builder --mac dmg zip --x64 --arm64",
+    "fetch-plugins": "node scripts/fetch-plugins.mjs",
+    "build:plugin-host": "cmake -S native/plugin-host -B native/plugin-host/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/plugin-host/build --config Release",
+    "check:plugin-host": "node scripts/check-plugin-host.mjs"
   },
   "build": {
     "appId": "io.github.basementband",
@@ -24,6 +27,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "plugin-host.js",
       "src/**/*",
       "node_modules/tone/build/Tone.js",
       "build/icon.png",
@@ -33,6 +37,22 @@
       {
         "from": "assets",
         "to": "assets"
+      },
+      {
+        "from": "plugins",
+        "to": "plugins",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "native/plugin-host/build/bb-plugin-host_artefacts/Release",
+        "to": "bin",
+        "filter": [
+          "bb-plugin-host",
+          "bb-plugin-host.exe",
+          "bb-plugin-host.app/**/*"
+        ]
       }
     ],
     "linux": {

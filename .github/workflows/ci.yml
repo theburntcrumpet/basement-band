@@ -1,4 +1,5 @@
-# Unit tests on every push and pull request (fast: no sample download needed).
+# Unit tests on every push and pull request (fast: no sample download needed), and the native
+# plugin helper built and checked against the bundled Dexed on every platform.
 name: CI
 
 on:
@@ -19,3 +20,17 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Unit tests
         run: npm test
+
+  plugin-host:
+    name: Plugin helper (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: ./.github/actions/plugin-host

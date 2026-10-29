@@ -1,3 +1,5 @@
 node_modules/
 dist/
 assets/samples/
+plugins/
+native/plugin-host/build/
