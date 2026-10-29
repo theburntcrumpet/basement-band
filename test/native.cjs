@@ -355,6 +355,52 @@ module.exports = async function native(win, app) {
     app.engine.project = store.project;
     return worst <= 1.5 ? 'ok loudness per 50 ms: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('native song engine matches the app: track and master effects', `
+    const { renderProject, resolveInstrument } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const { defaultFx } = await import('./engine/effects.js');
+    const rate = Tone.getContext().sampleRate;
+    const bands = [125, 500, 2000, 8000];
+    const bandDb = async (b, len) => {
+      const m = new AudioBuffer({ length: len, sampleRate: rate, numberOfChannels: 1 });
+      const d = m.getChannelData(0), l = b.getChannelData(0), r = b.getChannelData(1);
+      for (let i = 0; i < len; i++) d[i] = 0.5 * (l[i] + r[i]);
+      const out = [];
+      for (const f of bands) {
+        const ctx = new OfflineAudioContext(1, len, rate);
+        const src = ctx.createBufferSource(); src.buffer = m;
+        const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 1.4;
+        src.connect(bp).connect(ctx.destination); src.start();
+        const x = (await ctx.startRendering()).getChannelData(0);
+        let e = 0; for (let i = 0; i < len; i++) e += x[i] * x[i];
+        out.push(10 * Math.log10(e / len + 1e-20));
+      }
+      return out;
+    };
+    const notes = [{ t: 0, d: 1, n: 48, v: 0.8 }, { t: 0, d: 1, n: 60, v: 0.7 }, { t: 1, d: 1, n: 64, v: 0.8 }, { t: 2, d: 2, n: 67, v: 0.9 }];
+    const cases = [['vinyl', { fx: defaultFx('vinyl') }, null], ['tape', { fx: defaultFx('tape') }, null], ['radio', { fx: defaultFx('radio') }, null],
+      ['lo-fi', { fx: defaultFx('lofi') }, null], ['master vinyl', {}, defaultFx('vinyl')]];
+    const report = [];
+    let worst = 0;
+    for (const [name, trackFx, masterFx] of cases) {
+      const p = newProject(); p.bpm = 120;
+      if (masterFx) p.masterFx = masterFx;
+      const t = Object.assign(newTrack('instrument', 'grand-piano', 'P'), { reverb: 0, echo: 0, ...trackFx });
+      t.regions.push({ id: 'r', start: 0, length: 4, loopLength: 4, notes });
+      p.tracks.push(t);
+      const web = await renderProject(p, new Map(), { start: 0, end: 4, tail: 1, sampleRate: rate });
+      const song = songForNative(p, new Map([[t.id, await resolveInstrument('grand-piano')]]));
+      await new Promise(r => setTimeout(r, 200));
+      const nat = await renderNative(song, { start: 0, end: 4, tail: 1, sampleRate: rate });
+      const len = Math.min(web.length, nat.length);
+      const a = await bandDb(web, len), b = await bandDb(nat, len);
+      const max = Math.max(...a.map((v, i) => (Math.max(v, b[i]) > -65 ? Math.abs(v - b[i]) : 0)));
+      worst = Math.max(worst, max);
+      report.push(name + ' ' + max.toFixed(2) + ' dB' + (max > 1 ? ' [' + a.map((v, i) => v.toFixed(1) + '/' + b[i].toFixed(1)).join(' ') + ']' : ''));
+    }
+    return worst <= 1 ? 'ok per band: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

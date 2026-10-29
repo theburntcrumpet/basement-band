@@ -273,6 +273,7 @@ struct AmpSettings
 struct TrackSettings
 {
     AmpSettings amp;
+    var fx;          // the track's character effect (effects.js), or void
     float eqLow = 0, eqMid = 0, eqHigh = 0;
     float tone = 1, drive = 0, volumeDb = -4, pan = 0, reverb = 0, echo = 0;
     bool mute = false;
@@ -288,6 +289,7 @@ inline TrackSettings parseTrackSettings (const var& t)
     s.tone = num (t, "tone", 1); s.drive = num (t, "drive", 0); s.volumeDb = num (t, "volume", -4);
     s.pan = num (t, "pan", 0); s.reverb = num (t, "reverb", 0); s.echo = num (t, "echo", 0);
     s.mute = (bool) t.getProperty ("mute", false);
+    s.fx = t["fx"];
     const var a = t["amp"];
     if (a.isObject())
     {
@@ -452,6 +454,13 @@ private:
     AudioBuffer<float> scratch;
 };
 
+} // namespace bb
+
+#include "TrackFx.h"
+
+namespace bb
+{
+
 //==============================================================================
 // engine.js TrackNode, from the amp to the sends: amp -> EQ -> tone -> drive -> volume/pan.
 // Input is mono (the guitar); output is stereo, plus the reverb and echo send levels.
@@ -462,20 +471,24 @@ public:
     {
         rate = sampleRate;
         amp.prepare (rate, maxBlock);
-        driveShaper.prepare (0, maxBlock);
+        for (auto& d : driveShaper) d.prepare (0, maxBlock);
         for (auto* s : { &volume, &panL, &panR, &dry, &wet, &reverbSend, &echoSend }) s->prepare (rate, 0.015);
-        mono.setSize (1, maxBlock);
+        bufL.setSize (1, maxBlock); bufR.setSize (1, maxBlock);
+        fx.prepare (rate);
         configured = false;
     }
 
     void configure (const TrackSettings& t, const AudioBuffer<float>* ir)
     {
         amp.configure (t.amp, ir);
-        eq[0].set (Biquad::lowshelf, 120, 1, t.eqLow, rate);
-        eq[1].set (Biquad::peaking, 1000, 0.7, t.eqMid, rate);
-        eq[2].set (Biquad::highshelf, 5000, 1, t.eqHigh, rate);
-        tone.set (Biquad::lowpass, 400 * std::pow (50.0, (double) t.tone), 1, 0, rate);
-        driveShaper.curve = distortionCurve (0.1 + 0.75 * t.drive);
+        for (int c = 0; c < 2; ++c)
+        {
+            eq[0][c].set (Biquad::lowshelf, 120, 1, t.eqLow, rate);
+            eq[1][c].set (Biquad::peaking, 1000, 0.7, t.eqMid, rate);
+            eq[2][c].set (Biquad::highshelf, 5000, 1, t.eqHigh, rate);
+            tone[c].set (Biquad::lowpass, 400 * std::pow (50.0, (double) t.tone), 1, 0, rate);
+            driveShaper[c].curve = distortionCurve (0.1 + 0.75 * t.drive);
+        }
         const double w = jmin (1.0, (double) t.drive * 2);
         const bool jump = ! configured;
         dry.setTarget ((float) std::cos (w * MathConstants<double>::halfPi), jump);
@@ -487,20 +500,42 @@ public:
         panR.setTarget ((float) std::sin (x * MathConstants<double>::halfPi), jump);
         reverbSend.setTarget ((float) std::pow (jmax (0.0f, t.reverb), 1.5f), jump);
         echoSend.setTarget (jmax (0.0f, t.echo) * 0.7f, jump);
+        fx.configure (t.fx);
         configured = true;
     }
 
-    // in: mono input (n samples). Adds to out (stereo) and to the reverb/echo send buses (stereo).
-    void process (const float* in, int n, float* outL, float* outR, float* revL, float* revR, float* echoL, float* echoR)
+    // Noise layers in the track's effect (crackle, hiss) only sound while the song plays.
+    void setRunning (bool on) { fx.setRunning (on); }
+
+    // Stereo in, as the app's track runs (n samples): amp, EQ, tone, drive and effect work on each
+    // side, then Tone.Channel takes the track to mono and pans it. With an amp on, only the left
+    // side goes on (the amp's gate worklet has one output channel). Adds to out and the send buses.
+    void process (const float* inL, const float* inR, int n, float* outL, float* outR, float* revL, float* revR, float* echoL, float* echoR)
     {
-        auto* x = mono.getWritePointer (0);
-        memcpy (x, in, sizeof (float) * (size_t) n);
-        amp.process (x, n);
+        auto* a = bufL.getWritePointer (0);
+        auto* b = bufR.getWritePointer (0);
+        memcpy (a, inL, sizeof (float) * (size_t) n);
+        if (amp.active())
+        {
+            amp.process (a, n);
+            memcpy (b, a, sizeof (float) * (size_t) n);
+        }
+        else
+            memcpy (b, inR, sizeof (float) * (size_t) n);
+        float* ch[] = { a, b };
         for (int i = 0; i < n; ++i)
         {
-            float s = tone.process (eq[2].process (eq[1].process (eq[0].process (x[i]))));
-            s = s * dry.next() + driveShaper.lookup (s) * wet.next();
-            s *= volume.next();
+            const float d = dry.next(), w = wet.next();
+            for (int c = 0; c < 2; ++c)
+            {
+                const float s = tone[c].process (eq[2][c].process (eq[1][c].process (eq[0][c].process (ch[c][i]))));
+                ch[c][i] = s * d + driveShaper[c].lookup (s) * w;
+            }
+        }
+        if (fx.active()) fx.process (a, b, n);
+        for (int i = 0; i < n; ++i)
+        {
+            const float s = 0.5f * (a[i] + b[i]) * volume.next();
             const float l = s * panL.next(), r = s * panR.next();
             const float rs = reverbSend.next(), es = echoSend.next();
             outL[i] += l; outR[i] += r;
@@ -509,15 +544,22 @@ public:
         }
     }
 
+    // A mono source (the live input): the same on both sides.
+    void process (const float* in, int n, float* outL, float* outR, float* revL, float* revR, float* echoL, float* echoR)
+    {
+        process (in, in, n, outL, outR, revL, revR, echoL, echoR);
+    }
+
     Amp amp;
 
 private:
     double rate = 48000;
     bool configured = false;
-    Biquad eq[3], tone;
-    Shaper driveShaper;
+    Biquad eq[3][2], tone[2];
+    Shaper driveShaper[2];
     Smoothed volume, panL, panR, dry, wet, reverbSend, echoSend;
-    AudioBuffer<float> mono;
+    AudioBuffer<float> bufL, bufR;
+    FxSlot fx;
 };
 
 //==============================================================================
@@ -602,16 +644,25 @@ public:
         w = 0; det = 0; limGain = 1;
         volume.prepare (sr);
         volume.setTarget (1.0f, true);
+        fx.prepare (sr);
     }
 
     void setVolumeDb (float db) { volume.setTarget (Decibels::decibelsToGain (db, -100.0f)); }
 
+    // Master FX (effects.js FxSlot on the master bus), between the volume and the dynamics.
+    FxSlot fx;
+
     void process (float* l, float* r, int n) noexcept
     {
         const int size = look + 1;
+        if (fx.active())
+        {
+            for (int i = 0; i < n; ++i) { const float v = volume.next(); l[i] *= v; r[i] *= v; }
+            fx.process (l, r, n);
+        }
         for (int i = 0; i < n; ++i)
         {
-            const float v = volume.next();
+            const float v = fx.active() ? 1.0f : volume.next();
             const float inL = l[i] * v, inR = r[i] * v;
             const double peak = jmax (std::abs (inL), std::abs (inR));
             det = peak > det ? att * det + (1 - att) * peak : rel * det + (1 - rel) * peak;

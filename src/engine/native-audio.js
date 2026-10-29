@@ -59,7 +59,7 @@ export class NativeAudio extends EventTarget {
   async monitor(track, project, channel = 'left') {
     this.monitoring = !!track;
     return bridge.call('monitor:set', {
-      on: !!track, input: channel, track: track || {}, bpm: project?.bpm || 120, masterVolume: project?.masterVolume ?? 0,
+      on: !!track, input: channel, track: track || {}, bpm: project?.bpm || 120, masterVolume: project?.masterVolume ?? 0, masterFx: project?.masterFx || null,
     });
   }
 

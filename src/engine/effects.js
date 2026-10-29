@@ -111,6 +111,15 @@ function texture(kind, rate) {
 
 // ------------------------------------------------------------------ building blocks
 
+// Moves a param to a value: immediately when an effect is first built (gain params default to 1, so
+// gliding from there gave every export a burst of full-level crackle/hiss and a wobble lurch), else
+// with a short glide so knob moves don't click.
+let settingUp = false;
+function glide(param, value, t, timeConstant) {
+  if (settingUp) param.setValueAtTime(value, t);
+  else param.setTargetAtTime(value, t, timeConstant);
+}
+
 function shaperCurve(fn, n = 4096) {
   const c = new Float32Array(n);
   for (let i = 0; i < n; i++) c[i] = fn((i / (n - 1)) * 2 - 1);
@@ -147,8 +156,8 @@ function wobble(ctx) {
   return {
     node: delay,
     set: (wow, t) => {
-      slowDepth.gain.setTargetAtTime(wow * 0.0024, t, 0.05);
-      fastDepth.gain.setTargetAtTime(wow * 0.00016, t, 0.05);
+      glide(slowDepth.gain, wow * 0.0024, t, 0.05);
+      glide(fastDepth.gain, wow * 0.00016, t, 0.05);
     },
     sources: [slow, fast],
   };
@@ -180,15 +189,15 @@ const BUILDERS = {
     noise.connect(noiseLp).connect(wet);
     return {
       set(fx, t) {
-        hp.frequency.setTargetAtTime(25 + fx.age * 170, t, 0.03);
+        glide(hp.frequency, 25 + fx.age * 170, t, 0.03);
         const top = 18000 * Math.pow(0.2, fx.age);
-        lp.frequency.setTargetAtTime(top, t, 0.03);
-        lp2.frequency.setTargetAtTime(top, t, 0.03);
-        noiseLp.frequency.setTargetAtTime(Math.min(12000, top * 1.4), t, 0.03);
+        glide(lp.frequency, top, t, 0.03);
+        glide(lp2.frequency, top, t, 0.03);
+        glide(noiseLp.frequency, Math.min(12000, top * 1.4), t, 0.03);
         sat.curve = saturate(1 + fx.age * 2.5);
         wow.set(fx.wow, t);
-        crackleGain.gain.setTargetAtTime(Math.pow(fx.crackle, 1.5) * 0.5, t, 0.03);
-        popsGain.gain.setTargetAtTime(Math.pow(fx.pops, 1.5) * 0.7, t, 0.03);
+        glide(crackleGain.gain, Math.pow(fx.crackle, 1.5) * 0.5, t, 0.03);
+        glide(popsGain.gain, Math.pow(fx.pops, 1.5) * 0.7, t, 0.03);
       },
       noise: [noise],
       sources: [crackle, pops, ...wow.sources],
@@ -206,13 +215,13 @@ const BUILDERS = {
     return {
       set(fx, t) {
         const k = 1 + fx.saturation * 5;
-        drive.gain.setTargetAtTime(1 + fx.saturation * 1.5, t, 0.03);
+        glide(drive.gain, 1 + fx.saturation * 1.5, t, 0.03);
         sat.curve = saturate(k);
-        trim.gain.setTargetAtTime(1 / (1 + fx.saturation * 0.8), t, 0.03);
-        lowBump.gain.setTargetAtTime(fx.warmth * 3, t, 0.03);
-        lp.frequency.setTargetAtTime(16000 * Math.pow(0.3, fx.warmth), t, 0.03);
+        glide(trim.gain, 1 / (1 + fx.saturation * 0.8), t, 0.03);
+        glide(lowBump.gain, fx.warmth * 3, t, 0.03);
+        glide(lp.frequency, 16000 * Math.pow(0.3, fx.warmth), t, 0.03);
         wow.set(fx.wow, t);
-        hissGain.gain.setTargetAtTime(fx.hiss * 0.035, t, 0.03);
+        glide(hissGain.gain, fx.hiss * 0.035, t, 0.03);
       },
       noise: [noise],
       sources: [hiss, ...wow.sources],
@@ -231,12 +240,12 @@ const BUILDERS = {
     hiss.connect(band).connect(hissGain).connect(noise).connect(wet);
     return {
       set(fx, t) {
-        hp.frequency.setTargetAtTime(250 + fx.band * 650, t, 0.03);
-        lp.frequency.setTargetAtTime(6000 - fx.band * 3600, t, 0.03);
-        drive.gain.setTargetAtTime(1 + fx.distortion * 5, t, 0.03);
+        glide(hp.frequency, 250 + fx.band * 650, t, 0.03);
+        glide(lp.frequency, 6000 - fx.band * 3600, t, 0.03);
+        glide(drive.gain, 1 + fx.distortion * 5, t, 0.03);
         sat.curve = saturate(1 + fx.distortion * 4);
-        trim.gain.setTargetAtTime(1.6 / (1 + fx.distortion * 2), t, 0.03);
-        hissGain.gain.setTargetAtTime(fx.static * 0.12, t, 0.03);
+        glide(trim.gain, 1.6 / (1 + fx.distortion * 2), t, 0.03);
+        glide(hissGain.gain, fx.static * 0.12, t, 0.03);
       },
       noise: [noise],
       sources: [hiss],
@@ -255,8 +264,8 @@ const BUILDERS = {
       set(fx, t) {
         const b = Math.round(16 - fx.crush * 12);
         if (b !== bits) { crush.curve = crushCurve(b); bits = b; }
-        lp.frequency.setTargetAtTime(14000 * Math.pow(0.15, fx.tone), t, 0.03);
-        hissGain.gain.setTargetAtTime(fx.noise * 0.03, t, 0.03);
+        glide(lp.frequency, 14000 * Math.pow(0.15, fx.tone), t, 0.03);
+        glide(hissGain.gain, fx.noise * 0.03, t, 0.03);
       },
       noise: [noise],
       sources: [hiss],
@@ -306,13 +315,19 @@ export class FxSlot {
 
   setConfig(fx) {
     const type = fx?.type && EFFECTS[fx.type] ? fx.type : 'none';
-    if (type !== this.type) this.build(type);
+    const fresh = type !== this.type;
+    if (fresh) this.build(type);
     if (!this.graph) return;
     const full = { ...defaultFx(type), ...fx };
     const t = this.ctx.currentTime;
-    this.graph.set(full, t);
-    this.nodes.dry.gain.setTargetAtTime(1 - full.mix, t, 0.03);
-    this.nodes.wet.gain.setTargetAtTime(full.mix, t, 0.03);
+    settingUp = fresh;
+    try {
+      this.graph.set(full, t);
+      glide(this.nodes.dry.gain, 1 - full.mix, t, 0.03);
+      glide(this.nodes.wet.gain, full.mix, t, 0.03);
+    } finally {
+      settingUp = false;
+    }
   }
 
   // Noise layers follow the transport so a stopped song is silent.

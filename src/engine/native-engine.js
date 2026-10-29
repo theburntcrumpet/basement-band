@@ -105,6 +105,7 @@ export function songForNative(project, instruments, { metronome = false, bufferF
     tempoChanges: project.tempoChanges || [],
     cycle: project.cycle || { on: false, start: 0, end: 4 },
     masterVolume: project.masterVolume ?? 0,
+    masterFx: project.masterFx || null,
     metronome,
     meter: { num: m.num, pulse: m.pulse, compound: m.compound },
     tracks: project.tracks.filter(t => t.type !== 'audio' || bufferFor).map(t => {
@@ -112,6 +113,7 @@ export function songForNative(project, instruments, { metronome = false, bufferF
       const audio = t.type === 'audio';
       return {
         amp: t.amp || null,
+        fx: t.fx || null,
         id: t.id,
         volume: t.volume ?? -4, pan: t.pan ?? 0, tone: t.tone ?? 1, drive: t.drive || 0,
         reverb: t.reverb || 0, echo: t.echo || 0, eqLow: t.eqLow || 0, eqMid: t.eqMid || 0, eqHigh: t.eqHigh || 0,

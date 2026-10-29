@@ -257,6 +257,7 @@ public:
         pendingIr = ir;
         pendingBpm = (double) m.getProperty ("bpm", 120.0);
         pendingMaster = (float) (double) m.getProperty ("masterVolume", 0.0);
+        pendingMasterFx = m["masterFx"];
         hasPending = true;
         inputMode = m["input"].toString() == "right" ? 1 : m["input"].toString() == "stereo" ? 2 : 0;
         monitoring = (bool) m.getProperty ("on", false);
@@ -348,6 +349,7 @@ private:
     const AudioBuffer<float>* pendingIr = nullptr;
     double pendingBpm = 120;
     float pendingMaster = 0;
+    var pendingMasterFx;
     bool hasPending = false;
     std::atomic<int> inputMode { 0 };
     std::atomic<bool> monitoring { false }, recording { false };
@@ -428,6 +430,7 @@ private:
                 chain.configure (pending, pendingIr);
                 sends.setTempo (pendingBpm);
                 master.setVolumeDb (pendingMaster);
+                master.fx.configure (pendingMasterFx);
                 hasPending = false;
             }
         }
@@ -463,6 +466,8 @@ private:
         // The song (when the app plays through the native engine), then the live input on top.
         song.process (L, RR, n);
         if (! monitoring) return;
+        chain.setRunning (song.isPlaying());
+        master.fx.setRunning (song.isPlaying());
         bus.clear();
         chain.process (x, n, L, RR, bus.getWritePointer (0), bus.getWritePointer (1), bus.getWritePointer (2), bus.getWritePointer (3));
         sends.process (bus.getWritePointer (0), bus.getWritePointer (1), bus.getWritePointer (2), bus.getWritePointer (3), L, RR, n);

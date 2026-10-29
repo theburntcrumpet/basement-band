@@ -954,7 +954,7 @@ public:
         rate = sampleRate;
         chain.prepare (rate, block);
         if (instrument) instrument->prepare (rate, block);
-        mixL.setSize (1, block); mixR.setSize (1, block); mono.setSize (1, block);
+        mixL.setSize (1, block); mixR.setSize (1, block); mono.setSize (1, block); scratchR.setSize (1, block);
         settingsChanged = true;
     }
 
@@ -969,19 +969,20 @@ public:
         FloatVectorOperations::clear (r, n);
         if (instrument) instrument->render (l, r, n);
         clipVoices.render (l, r, n);
-        // Tone.Channel's panner takes one channel: the track is mixed to mono before it's panned.
-        for (int i = 0; i < n; ++i) m[i] = 0.5f * (l[i] + r[i]);
-        // The meter reads the channel output (post fader).
+        // The chain runs in stereo and outputs the panned channel (the meter reads it, post fader).
+        FloatVectorOperations::copy (m, l, n);
         FloatVectorOperations::clear (l, n);
+        auto* rin = scratchR.getWritePointer (0);
+        FloatVectorOperations::copy (rin, r, n);
         FloatVectorOperations::clear (r, n);
-        chain.process (m, n, l, r, revL, revR, echoL, echoR);
+        chain.process (m, rin, n, l, r, revL, revR, echoL, echoR);
         float pk = peak;
         for (int i = 0; i < n; ++i) { outL[i] += l[i]; outR[i] += r[i]; pk = jmax (pk, std::abs (l[i]), std::abs (r[i])); }
         peak = pk;
     }
 
 private:
-    AudioBuffer<float> mixL, mixR, mono;
+    AudioBuffer<float> mixL, mixR, mono, scratchR;
 };
 
 //==============================================================================
@@ -1098,6 +1099,7 @@ public:
         cycleStart = (double) song["cycle"].getProperty ("start", 0.0);
         cycleEnd = (double) song["cycle"].getProperty ("end", 4.0);
         masterDb = (float) (double) song.getProperty ("masterVolume", 0.0);
+        masterFx = song["masterFx"];
         metronome = (bool) song.getProperty ("metronome", false);
         meterNum = jmax (1, (int) song["meter"].getProperty ("num", 4));
         meterPulse = (double) song["meter"].getProperty ("pulse", 1.0);
@@ -1158,7 +1160,10 @@ public:
     {
         const ScopedTryLock l (lock);
         if (! l.isLocked()) return;
-        if (masterChanged) { master.setVolumeDb (masterDb); masterChanged = false; }
+        if (masterChanged) { master.setVolumeDb (masterDb); master.fx.configure (masterFx); masterChanged = false; }
+        const bool running = playing || offlineRender;
+        master.fx.setRunning (running);
+        for (auto& t : tracks) t->chain.setRunning (running);
         auto* outL = bus.getWritePointer (0); auto* outR = bus.getWritePointer (1);
         auto* revL = bus.getWritePointer (2); auto* revR = bus.getWritePointer (3);
         auto* echoL = bus.getWritePointer (4); auto* echoR = bus.getWritePointer (5);
@@ -1189,6 +1194,7 @@ public:
         const int stopAt = (int) std::llround (tempo.secBetween (start, end) * rate);
         AudioBuffer<float> out (2, total);
         out.clear();
+        offlineRender = true;   // an export keeps the effects' noise running to the end, as the app's does
         play (start, 0, false);
         for (int pos = 0; pos < total; pos += block)
         {
@@ -1228,6 +1234,8 @@ private:
     double position = 0, cycleStart = 0, cycleEnd = 4, meterPulse = 1;
     int meterNum = 4;
     float masterDb = 0;
+    var masterFx;
+    bool offlineRender = false;
     int64 waitSamples = 0, countInSamples = 0;
     std::atomic<double> beatNow { 0 };
     std::atomic<bool> playingNow { false };
