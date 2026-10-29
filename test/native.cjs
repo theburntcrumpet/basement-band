@@ -431,9 +431,13 @@ module.exports = async function native(win, app) {
         const a = loudness(web, len, ch), b = loudness(nat, len, ch);
         max = Math.max(max, ...a.map((v, i) => (Math.max(v, b[i]) > -50 ? Math.abs(v - b[i]) : 0)));
       }
-      // With the send fully open the (random) reverb tail dominates some windows; see the reverb cases above.
-      const wet = !!automation.reverb;
-      worst = Math.max(worst, wet ? max / 3 : max);
+      // With the send open the (random) reverb tail dominates individual windows, so the reverb case
+      // compares the overall level instead.
+      if (automation.reverb) {
+        const total = b => { let e = 0; for (const ch of [0, 1]) { const x = b.getChannelData(ch); for (let i = 0; i < len; i++) e += x[i] * x[i]; } return 10 * Math.log10(e / len); };
+        max = Math.abs(total(web) - total(nat));
+      }
+      worst = Math.max(worst, max);
       report.push(name + ' ' + max.toFixed(1) + ' dB');
     }
     return worst <= 1.5 ? 'ok loudness per 50 ms, each side: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
