@@ -183,6 +183,60 @@ module.exports = async function native(win, app) {
     }
     return worst <= 1 && worstEnv <= 1.5 ? 'ok ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('native song engine matches the app: synth presets and instrument effects', `
+    const { renderProject, resolveInstrument } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const { INSTRUMENTS } = await import('./engine/instruments.js');
+    const rate = Tone.getContext().sampleRate;
+    const bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
+    const bandDb = async buf => {
+      const out = [];
+      for (const f of bands) {
+        const ctx = new OfflineAudioContext(1, buf.length, rate);
+        const src = ctx.createBufferSource(); src.buffer = buf;
+        const bp1 = ctx.createBiquadFilter(), bp2 = ctx.createBiquadFilter();
+        for (const bp of [bp1, bp2]) { bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = 1.4; }
+        src.connect(bp1).connect(bp2).connect(ctx.destination); src.start();
+        const r = (await ctx.startRendering()).getChannelData(0);
+        let e = 0; for (let i = 0; i < r.length; i++) e += r[i] * r[i];
+        out.push(10 * Math.log10(e / r.length + 1e-20));
+      }
+      return out;
+    };
+    const mono = (b, n) => { const m = new AudioBuffer({ length: n, sampleRate: rate, numberOfChannels: 1 }); const d = m.getChannelData(0), l = b.getChannelData(0), r = b.getChannelData(1); for (let i = 0; i < n; i++) d[i] = 0.5 * ((l[i] || 0) + (r[i] || 0)); return m; };
+    // Loudness (RMS) per 50 ms: robust to the waveform details of dense chords.
+    const env = (b, n) => { const out = []; const l = b.getChannelData(0); for (let w = 0; w + 2400 <= n; w += 2400) { let e = 0; for (let i = w; i < w + 2400; i++) e += l[i] * l[i]; out.push(10 * Math.log10(e / 2400 + 1e-18)); } return out; };
+    const ids = INSTRUMENTS.filter(i => i.type === 'synth' || (i.type === 'sampler' && i.fx) || i.id === 'kit-lofi').map(i => i.id);
+    const report = [];
+    let worst = 0, worstEnv = 0;
+    for (const id of ids) {
+      const kit = id.startsWith('kit');
+      const notes = kit ? [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5].flatMap(t => [{ t, d: 0.25, n: 42, v: 0.7 }, { t, d: 0.25, n: t % 1 ? 38 : 36, v: 0.9 }])
+        : [{ t: 0, d: 1.5, n: 48, v: 0.8 }, { t: 0, d: 1.5, n: 55, v: 0.7 }, { t: 0.5, d: 1, n: 64, v: 0.9 }, { t: 2, d: 0.5, n: 60, v: 0.6 }, { t: 2.5, d: 1.2, n: 72, v: 1 }];
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack(kit ? 'drums' : 'instrument', id, id), { reverb: 0, echo: 0 });
+      t.regions.push({ id: 'r', start: 0, length: 4, loopLength: 4, notes });
+      p.tracks.push(t);
+      const web = await renderProject(p, new Map(), { start: 0, end: 4, tail: 2.5, sampleRate: rate });
+      const song = songForNative(p, new Map([[t.id, await resolveInstrument(id)]]));
+      if (!song.tracks[0].instrument) { report.push(id + ' not supported'); worst = 99; continue; }
+      await new Promise(r => setTimeout(r, 200));
+      const nat = await renderNative(song, { start: 0, end: 4, tail: 2.5, sampleRate: rate });
+      const n = Math.min(web.length, nat.length);
+      const a = await bandDb(mono(web, n)), b = await bandDb(mono(nat, n));
+      const max = Math.max(...a.map((v, i) => (Math.max(v, b[i]) > -60 ? Math.abs(v - b[i]) : 0)));
+      const ea = env(web, n), eb = env(nat, n);
+      const envDiff = Math.max(...ea.map((v, i) => (Math.max(v, eb[i]) > -45 ? Math.abs(v - eb[i]) : 0)));
+      // Where an echo (FeedbackDelay) overlaps a new note, Chromium's result shifts with where the
+      // notes fall in time, so those presets get more room on the envelope.
+      const echoes = song.tracks[0].instrument.effects?.some(e => e.name === 'FeedbackDelay');
+      worst = Math.max(worst, max); worstEnv = Math.max(worstEnv, echoes ? envDiff / 2.5 : envDiff);
+      const where = ea.map((v, i) => (Math.max(v, eb[i]) > -45 && Math.abs(v - eb[i]) > 2 ? (i * 0.05).toFixed(2) + 's ' + v.toFixed(1) + '/' + eb[i].toFixed(1) : null)).filter(Boolean).slice(0, 5).join(', ');
+      report.push(id + ' ' + max.toFixed(2) + '/' + envDiff.toFixed(1) + ' dB' + (where ? ' at ' + where : ''));
+    }
+    return worst <= 1.5 && worstEnv <= 2 ? 'ok (band/envelope) ' + report.join('; ') : 'differences (band/envelope): ' + report.join('; ');`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

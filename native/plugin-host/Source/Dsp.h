@@ -14,6 +14,30 @@ namespace bb
 using namespace juce;
 
 //==============================================================================
+// Tone.FeedbackDelay as Chromium runs it: the first repeat arrives after exactly the delay time, but a
+// feedback loop through a DelayNode is processed a render quantum (128 frames) late, so each further
+// repeat is 128 frames later still: y[n] = x[n − D] + feedback · y[n − D − 128].
+struct WebFeedbackDelay
+{
+    static constexpr int quantum = 128;
+    std::vector<float> x, y;
+    int d = 1, w = 0;
+    float feedback = 0;
+
+    void prepare (int maxDelaySamples) { x.assign ((size_t) maxDelaySamples + quantum + 2, 0.0f); y = x; w = 0; }
+    void setDelay (int samples) { d = jlimit (1, (int) x.size() - quantum - 1, samples); }
+
+    float process (float in) noexcept
+    {
+        const int size = (int) x.size();
+        x[(size_t) w] = in;
+        const float out = x[(size_t) ((w - d + size) % size)] + feedback * y[(size_t) ((w - d - quantum + 2 * size) % size)];
+        y[(size_t) w] = out;
+        w = (w + 1) % size;
+        return out;
+    }
+};
+
 // Web Audio BiquadFilterNode, one channel.
 struct Biquad
 {
@@ -476,11 +500,11 @@ public:
         for (auto& f : echoTone) f.set (Biquad::lowpass, 3200, 1, 0, rate);
         reverb.loadImpulseResponse (makeImpulse (2.6), rate, dsp::Convolution::Stereo::yes, dsp::Convolution::Trim::no, dsp::Convolution::Normalise::no);
         reverb.prepare ({ rate, (uint32) maxBlock, 2 });
-        delayLine.assign (2, std::vector<float> ((size_t) (rate * 4) + 1, 0.0f));
+        for (auto& e : echo) { e.prepare ((int) (rate * 4)); e.feedback = 0.32f; }
         setTempo (120);
     }
 
-    void setTempo (double bpm) { delaySamples = jlimit (1, (int) delayLine[0].size() - 1, (int) std::lround (60.0 / bpm * 0.75 * rate)); }
+    void setTempo (double bpm) { for (auto& e : echo) e.setDelay ((int) std::lround (60.0 / bpm * 0.75 * rate)); }
 
     // Processes the send buses in place and adds the results to out.
     void process (float* revL, float* revR, float* echoL, float* echoR, float* outL, float* outR, int n)
@@ -489,19 +513,11 @@ public:
         float* chans[] = { revL, revR };
         dsp::AudioBlock<float> b (chans, 2, (size_t) n);
         reverb.process (dsp::ProcessContextReplacing<float> (b));
-        const auto size = (int) delayLine[0].size();
         for (int i = 0; i < n; ++i)
         {
             float* ins[] = { echoL, echoR };
             for (int c = 0; c < 2; ++c)
-            {
-                auto& line = delayLine[(size_t) c];
-                const int readAt = (writePos - delaySamples + size) % size;
-                const float delayed = line[(size_t) readAt];
-                line[(size_t) writePos] = ins[c][i] + delayed * 0.32f;   // Tone.FeedbackDelay, wet 1
-                ins[c][i] = echoTone[c].process (delayed);
-            }
-            writePos = (writePos + 1) % size;
+                ins[c][i] = echoTone[c].process (echo[c].process (ins[c][i]));   // Tone.FeedbackDelay, wet 1
             outL[i] += revL[i] + echoL[i];
             outR[i] += revR[i] + echoR[i];
         }
@@ -511,8 +527,7 @@ private:
     double rate = 48000;
     Biquad reverbEq[2], echoTone[2];
     dsp::Convolution reverb { dsp::Convolution::Latency { 0 } };
-    std::vector<std::vector<float>> delayLine;
-    int delaySamples = 1, writePos = 0;
+    WebFeedbackDelay echo[2];
 
     // engine.js makeImpulse(): smooth stereo room, darker as it fades; scaled the way Web Audio's
     // ConvolverNode normalises (so the reverb level matches).

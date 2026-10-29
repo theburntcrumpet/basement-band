@@ -315,14 +315,14 @@ function samplerFx(kind) {
   return [];
 }
 
+const lofiKitFx = () => [new Tone.Filter({ frequency: 2600, type: 'lowpass', rolloff: -24 }), new Tone.Distortion({ distortion: 0.2, wet: 0.35 }), new Tone.Filter(70, 'highpass')];
+
 class DrumKit {
   constructor(def, buffers) {
     this.output = new Tone.Gain(Tone.dbToGain(def.volume));
     this.bus = new Tone.Gain();
     this.extra = [];
-    if (def.fx === 'lofi') {
-      this.extra = [new Tone.Filter({ frequency: 2600, type: 'lowpass', rolloff: -24 }), new Tone.Distortion({ distortion: 0.2, wet: 0.35 }), new Tone.Filter(70, 'highpass')];
-    }
+    if (def.fx === 'lofi') this.extra = lofiKitFx();
     Tone.connectSeries(this.bus, ...this.extra, this.output);
     this.buffers = buffers;
     this.offline = this.bus.context.isOffline;
@@ -404,6 +404,44 @@ export function createInstrument(id, buffers = {}) {
   }
   const chain = SYNTHS[def.preset]();
   return new ToneInstrument(chain[0], chain, def.volume);
+}
+
+// ------------------------------------------------------------------ for the native engine
+
+// Tone effects as the native engine takes them: each node's class and resolved settings.
+const effectSpecs = nodes => nodes.map(n => ({ name: n.name, options: n.get() }));
+
+// What an instrument's effects and synth are, in the native engine's terms (see native-engine.js).
+// Built from the real Tone objects so every default matches.
+export function nativeParts(id) {
+  const def = getInstrument(id);
+  if (def.type === 'synth') {
+    const chain = SYNTHS[def.preset]();
+    const [synth, ...fx] = chain;
+    const spec = {
+      kind: 'poly',
+      voice: { type: synth._dummyVoice.name, options: synth.get() },
+      maxPolyphony: synth.maxPolyphony,
+      polyVolume: synth.volume.value,
+      effects: effectSpecs(fx),
+      volume: def.volume || 0,
+    };
+    chain.forEach(n => n.dispose());
+    return spec;
+  }
+  if (def.type === 'sampler') {
+    const fx = samplerFx(def.fx);
+    const spec = { effects: effectSpecs(fx), volume: def.volume || 0 };
+    fx.forEach(n => n.dispose());
+    return spec;
+  }
+  if (def.type === 'kit' && def.kit !== 'synth') {
+    const fx = def.fx === 'lofi' ? lofiKitFx() : [];
+    const spec = { effects: effectSpecs(fx), volume: def.volume || 0 };
+    fx.forEach(n => n.dispose());
+    return spec;
+  }
+  return null;
 }
 
 // Sampled instruments whose files failed to load fall back to a synth of the same family.

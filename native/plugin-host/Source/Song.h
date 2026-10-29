@@ -8,6 +8,7 @@
 #pragma once
 
 #include "Dsp.h"
+#include "Synth.h"
 #include <atomic>
 #include <map>
 #include <memory>
@@ -177,6 +178,43 @@ public:
     virtual void render (float* left, float* right, int n) = 0;
 };
 
+// instruments.js ToneInstrument: a sound source, then its effects, then the output level.
+class ChainedInstrument : public Instrument
+{
+public:
+    std::vector<var> effectSpecs;
+    float outputGain = 1;
+
+    void prepare (double sampleRate, int maxBlock) override
+    {
+        rate = sampleRate;
+        tmpL.assign ((size_t) maxBlock, 0.0f);
+        tmpR.assign ((size_t) maxBlock, 0.0f);
+        effects.clear();
+        for (auto& e : effectSpecs)
+            if (auto fx = makeEffect (e, rate, maxBlock)) effects.push_back (std::move (fx));
+        prepareSource();
+    }
+
+    void render (float* L, float* R, int n) override
+    {
+        FloatVectorOperations::clear (tmpL.data(), n);
+        FloatVectorOperations::clear (tmpR.data(), n);
+        renderSource (tmpL.data(), tmpR.data(), n);
+        for (auto& e : effects) e->process (tmpL.data(), tmpR.data(), n);
+        for (int i = 0; i < n; ++i) { L[i] += tmpL[(size_t) i] * outputGain; R[i] += tmpR[(size_t) i] * outputGain; }
+    }
+
+protected:
+    double rate = 48000;
+    virtual void prepareSource() {}
+    virtual void renderSource (float* L, float* R, int n) = 0;
+
+private:
+    std::vector<float> tmpL, tmpR;
+    std::vector<std::unique_ptr<Effect>> effects;
+};
+
 // A sample voice: plays a buffer at a playback rate with a fade envelope, from a given offset in the block.
 struct SampleVoice
 {
@@ -237,13 +275,11 @@ public:
 //==============================================================================
 // Tone.Sampler: the nearest sample (preferring the one above at equal distance), repitched; gain is
 // the velocity; attack/release fades with the instrument's curve.
-class SamplerInstrument final : public Instrument
+class SamplerInstrument final : public ChainedInstrument
 {
 public:
-    SamplerInstrument (std::map<int, std::shared_ptr<Sample>> zonesIn, double attackSec, double releaseSec, bool expCurve, float volumeDb)
-        : zones (std::move (zonesIn)), attack (attackSec), release (releaseSec), exponential (expCurve), volume (Decibels::decibelsToGain (volumeDb)) {}
-
-    void prepare (double sr, int) override { rate = sr; }
+    SamplerInstrument (std::map<int, std::shared_ptr<Sample>> zonesIn, double attackSec, double releaseSec, bool expCurve)
+        : zones (std::move (zonesIn)), attack (attackSec), release (releaseSec), exponential (expCurve) {}
 
     void noteOn (const NoteEvent& e) override
     {
@@ -264,7 +300,7 @@ public:
         v.step = playbackRate * sample->rate / rate;
         v.delay = e.offset;
         v.midi = e.midi;
-        v.gain = volume;
+        v.gain = 1;
         v.env.start (e.velocity, attack, release, rate, exponential);
         // Natural end: the buffer's duration at this playback rate.
         v.endAt = (int64) std::llround (sample->data.getNumSamples() / v.step);
@@ -279,26 +315,23 @@ public:
 
     void allNotesOff (int offset) override { for (auto& v : pool.voices) if (v.active) v.env.stop (offset - v.delay); }
 
-    void render (float* L, float* R, int n) override { pool.render (L, R, n); }
+protected:
+    void renderSource (float* L, float* R, int n) override { pool.render (L, R, n); }
 
 private:
     std::map<int, std::shared_ptr<Sample>> zones;
-    double attack, release, rate = 48000;
+    double attack, release;
     bool exponential;
-    float volume;
     VoicePool pool;
 };
 
 //==============================================================================
 // instruments.js DrumKit: one-shots with velocity layers, a 40 ms linear fade at the end, and closed
 // hats choking the open hat.
-class KitInstrument final : public Instrument
+class KitInstrument final : public ChainedInstrument
 {
 public:
-    KitInstrument (std::map<int, std::vector<std::shared_ptr<Sample>>> piecesIn, float volumeDb)
-        : pieces (std::move (piecesIn)), volume (Decibels::decibelsToGain (volumeDb)) {}
-
-    void prepare (double sr, int) override { rate = sr; }
+    explicit KitInstrument (std::map<int, std::vector<std::shared_ptr<Sample>>> piecesIn) : pieces (std::move (piecesIn)) {}
 
     void noteOn (const NoteEvent& e) override
     {
@@ -316,7 +349,7 @@ public:
         v.step = sample->rate / rate;
         v.delay = e.offset;
         v.midi = e.midi;
-        v.gain = volume;
+        v.gain = 1;
         const float g = count > 1 ? 0.55f + 0.45f * e.velocity : 0.15f + 0.85f * e.velocity;
         v.env.start (g, 0, 0.04, rate, false);
         v.endAt = (int64) std::llround (sample->data.getNumSamples() / v.step);
@@ -324,13 +357,90 @@ public:
 
     void noteOff (int, int) override {}
     void allNotesOff (int offset) override { for (auto& v : pool.voices) if (v.active && v.midi == 46) v.env.stop (offset - v.delay); }
-    void render (float* L, float* R, int n) override { pool.render (L, R, n); }
+
+protected:
+    void renderSource (float* L, float* R, int n) override { pool.render (L, R, n); }
 
 private:
     std::map<int, std::vector<std::shared_ptr<Sample>>> pieces;
-    double rate = 48000;
-    float volume;
     VoicePool pool;
+};
+
+//==============================================================================
+// Tone.PolySynth of Synth / MonoSynth / FMSynth voices. A note gets a free voice (one whose release
+// has finished) or a new one up to maxPolyphony; releasing a note releases its sounding voice.
+class PolySynthInstrument final : public ChainedInstrument
+{
+public:
+    PolySynthInstrument (SynthVoice::Settings s, int maxVoices, float volumeDb)
+        : settings (std::move (s)), maxPolyphony (jmax (1, maxVoices)), volume (Decibels::decibelsToGain (volumeDb)) {}
+
+    void noteOn (const NoteEvent& e) override
+    {
+        events.push_back ({ now + e.offset, true, e.midi, e.velocity });
+        if (e.durationSamples >= 0) events.push_back ({ now + e.offset + e.durationSamples, false, e.midi, 0 });
+    }
+
+    void noteOff (int midi, int offset) override { events.push_back ({ now + offset, false, midi, 0 }); }
+
+    void allNotesOff (int offset) override
+    {
+        for (auto& v : voices) if (! v.released) events.push_back ({ now + offset, false, v.midi, 0 });
+    }
+
+protected:
+    void prepareSource() override { voices.reserve ((size_t) maxPolyphony); }
+
+    void renderSource (float* L, float* R, int n) override
+    {
+        mono.resize ((size_t) n);
+        FloatVectorOperations::clear (mono.data(), n);
+        std::stable_sort (events.begin(), events.end(), [] (auto& a, auto& b) { return a.at < b.at || (a.at == b.at && ! a.on && b.on); });
+        int pos = 0;
+        while (pos < n)
+        {
+            // Events due in this stretch, then render up to the next one.
+            size_t k = 0;
+            for (; k < events.size() && events[k].at <= now + pos; ++k) apply (events[k]);
+            events.erase (events.begin(), events.begin() + (long) k);
+            int next = n;
+            if (! events.empty()) next = (int) jlimit<int64> (pos + 1, n, events.front().at - now);
+            for (auto& v : voices)
+                if (! v.silent()) v.render (mono.data(), pos, next);
+            pos = next;
+        }
+        now += n;
+        for (int i = 0; i < n; ++i) { const float x = mono[(size_t) i] * volume; L[i] += x; R[i] += x; }
+    }
+
+private:
+    struct Event { int64 at; bool on; int midi; float velocity; };
+    SynthVoice::Settings settings;
+    int maxPolyphony;
+    float volume;
+    std::vector<SynthVoice> voices;
+    std::vector<Event> events;
+    std::vector<float> mono;
+    int64 now = 0, counter = 0;
+
+    void apply (const Event& e)
+    {
+        if (e.on)
+        {
+            SynthVoice* v = nullptr;
+            for (auto& x : voices) if (x.silent()) { v = &x; break; }
+            if (v == nullptr && (int) voices.size() < maxPolyphony) { voices.emplace_back(); v = &voices.back(); }
+            if (v == nullptr) return;   // Tone drops notes beyond maxPolyphony
+            v->start (settings, e.midi, e.velocity, rate);
+            v->age = ++counter;
+            return;
+        }
+        // Release the oldest sounding voice for this note.
+        SynthVoice* target = nullptr;
+        for (auto& x : voices)
+            if (x.midi == e.midi && ! x.released && (target == nullptr || x.age < target->age)) target = &x;
+        if (target) target->release();
+    }
 };
 
 //==============================================================================
@@ -738,8 +848,9 @@ private:
             if (auto* o = d["zones"].getDynamicObject())
                 for (auto& p : o->getProperties())
                     if (auto s = pool.get (p.value.toString())) zones[p.name.toString().getIntValue()] = s;
-            return std::make_unique<SamplerInstrument> (std::move (zones), (double) d.getProperty ("attack", 0.0), (double) d.getProperty ("release", 0.5),
-                                                        d.getProperty ("curve", "exponential").toString() != "linear", (float) (double) d.getProperty ("volume", 0.0));
+            auto inst = std::make_unique<SamplerInstrument> (std::move (zones), (double) d.getProperty ("attack", 0.0), (double) d.getProperty ("release", 0.5),
+                                                             d.getProperty ("curve", "exponential").toString() != "linear");
+            return withChain (std::move (inst), d);
         }
         if (kind == "kit")
         {
@@ -749,9 +860,46 @@ private:
                     if (auto* layers = p.value.getArray())
                         for (auto& id : *layers)
                             if (auto s = pool.get (id.toString())) pieces[p.name.toString().getIntValue()].push_back (s);
-            return std::make_unique<KitInstrument> (std::move (pieces), (float) (double) d.getProperty ("volume", 0.0));
+            return withChain (std::make_unique<KitInstrument> (std::move (pieces)), d);
+        }
+        if (kind == "poly")
+        {
+            const var v = d["voice"], o = v["options"];
+            SynthVoice::Settings s;
+            const String type = v["type"];
+            s.kind = type == "MonoSynth" ? SynthVoice::mono : type == "FMSynth" ? SynthVoice::fm : SynthVoice::plain;
+            s.osc = OscSettings::parse (o["oscillator"]);
+            s.env = ToneEnvelope::parse (o["envelope"]);
+            s.volumeDb = (float) (double) o.getProperty ("volume", 0.0);
+            s.detuneCents = (double) o.getProperty ("detune", 0.0);
+            if (s.kind == SynthVoice::mono)
+            {
+                s.filter = o["filter"];
+                const var fe = o["filterEnvelope"];
+                s.filterEnv = ToneEnvelope::parse (fe);
+                s.filterBase = (double) fe.getProperty ("baseFrequency", 200.0);
+                s.filterOctaves = (double) fe.getProperty ("octaves", 3.0);
+                s.filterExponent = (double) fe.getProperty ("exponent", 1.0);
+            }
+            if (s.kind == SynthVoice::fm)
+            {
+                s.modOsc = OscSettings::parse (o["modulation"]);
+                s.modEnv = ToneEnvelope::parse (o["modulationEnvelope"]);
+                s.harmonicity = (double) o.getProperty ("harmonicity", 3.0);
+                s.modulationIndex = (double) o.getProperty ("modulationIndex", 10.0);
+            }
+            auto inst = std::make_unique<PolySynthInstrument> (std::move (s), (int) d.getProperty ("maxPolyphony", 32), (float) (double) d.getProperty ("polyVolume", 0.0));
+            return withChain (std::move (inst), d);
         }
         return nullptr;
+    }
+
+    static std::unique_ptr<Instrument> withChain (std::unique_ptr<ChainedInstrument> inst, const var& d)
+    {
+        if (auto* fx = d["effects"].getArray())
+            for (auto& e : *fx) inst->effectSpecs.push_back (e);
+        inst->outputGain = Decibels::decibelsToGain ((float) (double) d.getProperty ("volume", 0.0));
+        return inst;
     }
 };
 

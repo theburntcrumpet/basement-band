@@ -3,7 +3,7 @@
 // does what scheduleProject() and the instrument classes do in the app's own engine.
 
 import { bridge } from './plugins.js';
-import { getInstrument } from './instruments.js';
+import { getInstrument, nativeParts } from './instruments.js';
 import { noteToMidi } from '../music/theory.js';
 import { meter } from '../music/meter.js';
 import { expandRegion, isMuted } from './engine.js';
@@ -44,19 +44,27 @@ function upload(buffer) {
 
 // What the helper should play for an instrument, given its loaded buffers (as the app's engine
 // loads them); null when the native engine can't play it yet.
+const partsCache = new Map();
+const partsFor = id => {
+  if (!partsCache.has(id)) partsCache.set(id, nativeParts(id));
+  return partsCache.get(id);
+};
+
 export function nativeInstrument(id, buffers) {
   const def = getInstrument(id);
-  if (def.type === 'sampler' && !def.fx) {
+  const parts = partsFor(id);
+  if (!parts) return null;
+  if (def.type === 'sampler') {
     const zones = {};
     for (const [note, buffer] of Object.entries(buffers || {})) zones[noteToMidi(note)] = upload(buffer);
-    return { kind: 'sampler', zones, attack: def.attack || 0, release: def.release ?? 0.5, curve: 'exponential', volume: def.volume || 0 };
+    return { kind: 'sampler', zones, attack: def.attack || 0, release: def.release ?? 0.5, curve: 'exponential', ...parts };
   }
-  if (def.type === 'kit' && def.kit !== 'synth' && !def.fx) {
+  if (def.type === 'kit') {
     const pieces = {};
     for (const [midi, layers] of Object.entries(buffers || {})) pieces[midi] = layers.map(upload);
-    return { kind: 'kit', pieces, volume: def.volume || 0 };
+    return { kind: 'kit', pieces, ...parts };
   }
-  return null;
+  return parts;   // synth presets need no samples
 }
 
 // ------------------------------------------------------------------ the song
