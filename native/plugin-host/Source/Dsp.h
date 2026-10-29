@@ -507,6 +507,30 @@ public:
     // Noise layers in the track's effect (crackle, hiss) only sound while the song plays.
     void setRunning (bool on) { fx.setRunning (on); }
 
+    // Automation (engine.js autoTarget): sets a param's value now, in the param's own units —
+    // volume as a gain, pan, the send gains, tone as a frequency in Hz, EQ bands in dB.
+    enum class Param { volume, pan, reverb, echo, tone, eqLow, eqMid, eqHigh };
+    void automate (Param p, double v)
+    {
+        switch (p)
+        {
+            case Param::volume: volume.setTarget ((float) v, true); break;
+            case Param::pan:
+            {
+                const double x = (jlimit (-1.0, 1.0, v) + 1) / 2;
+                panL.setTarget ((float) std::cos (x * MathConstants<double>::halfPi), true);
+                panR.setTarget ((float) std::sin (x * MathConstants<double>::halfPi), true);
+                break;
+            }
+            case Param::reverb: reverbSend.setTarget ((float) v, true); break;
+            case Param::echo: echoSend.setTarget ((float) v, true); break;
+            case Param::tone: for (auto& t : tone) t.set (Biquad::lowpass, v, 1, 0, rate); break;
+            case Param::eqLow: for (auto& f : eq[0]) f.set (Biquad::lowshelf, 120, 1, v, rate); break;
+            case Param::eqMid: for (auto& f : eq[1]) f.set (Biquad::peaking, 1000, 0.7, v, rate); break;
+            case Param::eqHigh: for (auto& f : eq[2]) f.set (Biquad::highshelf, 5000, 1, v, rate); break;
+        }
+    }
+
     // Stereo in, as the app's track runs (n samples): amp, EQ, tone, drive and effect work on each
     // side, then Tone.Channel takes the track to mono and pans it. With an amp on, only the left
     // side goes on (the amp's gate worklet has one output channel). Adds to out and the send buses.

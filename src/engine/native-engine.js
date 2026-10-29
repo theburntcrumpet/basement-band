@@ -114,6 +114,7 @@ export function songForNative(project, instruments, { metronome = false, bufferF
       return {
         amp: t.amp || null,
         fx: t.fx || null,
+        automation: t.automation || {},
         id: t.id,
         volume: t.volume ?? -4, pan: t.pan ?? 0, tone: t.tone ?? 1, drive: t.drive || 0,
         reverb: t.reverb || 0, echo: t.echo || 0, eqLow: t.eqLow || 0, eqMid: t.eqMid || 0, eqHigh: t.eqHigh || 0,

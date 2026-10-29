@@ -904,6 +904,93 @@ private:
 // A track: its notes, instrument and mixer chain.
 struct SongNote { double beat, lengthBeats; int midi; float velocity; };
 
+// A track's automation curves (automation.js): points {t (beats), v (the setting's units)}. Played as
+// the app does: linear ramps in the param's own units between points, held before the first and
+// after the last; a ramp under way when playback starts (or a cycle repeat restarts) begins from the
+// value at that moment.
+struct Automation
+{
+    struct Curve { TrackChain::Param param; std::vector<std::pair<double, double>> points; };
+    std::vector<Curve> curves;
+
+    static double mapped (TrackChain::Param p, double v)
+    {
+        switch (p)
+        {
+            case TrackChain::Param::volume: return Decibels::decibelsToGain (v, -100.0);
+            case TrackChain::Param::reverb: return std::pow (jmax (0.0, v), 1.5);
+            case TrackChain::Param::echo: return jmax (0.0, v) * 0.7;
+            case TrackChain::Param::tone: return 400 * std::pow (50.0, v);
+            default: return v;
+        }
+    }
+
+    // Value at `beat` in the setting's own units (automation.js valueAt).
+    static double valueAt (const std::vector<std::pair<double, double>>& pts, double beat)
+    {
+        if (beat <= pts.front().first) return pts.front().second;
+        for (size_t i = 1; i < pts.size(); ++i)
+            if (beat <= pts[i].first)
+            {
+                const auto& a = pts[i - 1]; const auto& b = pts[i];
+                return b.first == a.first ? b.second : a.second + (b.second - a.second) * (beat - a.first) / (b.first - a.first);
+            }
+        return pts.back().second;
+    }
+
+    // The param value at `beat` while playing, given where the current pass began (`anchor`).
+    static double playing (const Curve& c, double beat, double anchor)
+    {
+        const auto& pts = c.points;
+        if (beat <= pts.front().first) return mapped (c.param, pts.front().second);
+        for (size_t i = 1; i < pts.size(); ++i)
+            if (beat <= pts[i].first)
+            {
+                const double s = jmax (pts[i - 1].first, anchor);
+                const double from = s > pts[i - 1].first ? mapped (c.param, valueAt (pts, s)) : mapped (c.param, pts[i - 1].second);
+                const double to = mapped (c.param, pts[i].second);
+                return pts[i].first <= s ? to : from + (to - from) * (beat - s) / (pts[i].first - s);
+            }
+        return mapped (c.param, pts.back().second);
+    }
+
+    static Automation parse (const var& a)
+    {
+        Automation out;
+        static const std::pair<const char*, TrackChain::Param> keys[] = {
+            { "volume", TrackChain::Param::volume }, { "pan", TrackChain::Param::pan }, { "reverb", TrackChain::Param::reverb },
+            { "echo", TrackChain::Param::echo }, { "tone", TrackChain::Param::tone }, { "eqLow", TrackChain::Param::eqLow },
+            { "eqMid", TrackChain::Param::eqMid }, { "eqHigh", TrackChain::Param::eqHigh } };
+        for (auto& [key, param] : keys)
+            if (auto* pts = a[key].getArray(); pts != nullptr && ! pts->isEmpty())
+            {
+                Curve c { param, {} };
+                for (auto& p : *pts) c.points.push_back ({ (double) p["t"], (double) p["v"] });
+                std::stable_sort (c.points.begin(), c.points.end(), [] (auto& x, auto& y) { return x.first < y.first; });
+                out.curves.push_back (std::move (c));
+            }
+        return out;
+    }
+};
+
+// Which song beat each sample of a block is at (pieces, as the block may wrap round the cycle).
+struct BlockBeats
+{
+    struct Piece { int offset; double beat, beatsPerSample, anchor; };
+    std::vector<Piece> pieces;
+    bool playing = false;
+    double parked = 0;   // where the song sits while stopped
+
+    // Beat and ramp anchor at a sample offset.
+    std::pair<double, double> at (int offset) const
+    {
+        const Piece* p = nullptr;
+        for (auto& x : pieces) if (x.offset <= offset) p = &x;
+        if (p == nullptr) return { parked, parked };
+        return { p->beat + (offset - p->offset) * p->beatsPerSample, p->anchor };
+    }
+};
+
 // One pass of an audio clip (engine.js audioSegments()): plays from `offset` seconds into the
 // (already time-stretched) audio for `seconds`, starting at `beat`; `spb` converts beats into it.
 struct ClipSegment
@@ -945,6 +1032,7 @@ public:
     void stopClips (int offset) { for (auto& v : clipVoices.voices) if (v.active) v.env.stop (offset - v.delay); }
     TrackChain chain;
     TrackSettings settings;
+    Automation automation;
     const AudioBuffer<float>* ir = nullptr;
     bool settingsChanged = true;
     float peak = 0;
@@ -958,8 +1046,9 @@ public:
         settingsChanged = true;
     }
 
-    // Renders the instrument and runs the chain, adding to out and the send buses.
-    void render (int n, float* outL, float* outR, float* revL, float* revR, float* echoL, float* echoR)
+    // Renders the instrument and runs the chain, adding to out and the send buses; automated settings
+    // follow their curves (every 32 samples).
+    void render (int n, float* outL, float* outR, float* revL, float* revR, float* echoL, float* echoR, const BlockBeats& beats)
     {
         if (settingsChanged) { chain.configure (settings, ir); settingsChanged = false; }
         auto* l = mixL.getWritePointer (0);
@@ -975,7 +1064,17 @@ public:
         auto* rin = scratchR.getWritePointer (0);
         FloatVectorOperations::copy (rin, r, n);
         FloatVectorOperations::clear (r, n);
-        chain.process (m, rin, n, l, r, revL, revR, echoL, echoR);
+        if (automation.curves.empty())
+            chain.process (m, rin, n, l, r, revL, revR, echoL, echoR);
+        else
+            for (int o = 0; o < n; o += 32)
+            {
+                const int len = jmin (32, n - o);
+                const auto [beat, anchor] = beats.at (o);
+                for (auto& c : automation.curves)
+                    chain.automate (c.param, beats.playing ? Automation::playing (c, beat, anchor) : Automation::mapped (c.param, Automation::valueAt (c.points, beat)));
+                chain.process (m + o, rin + o, len, l + o, r + o, revL + o, revR + o, echoL + o, echoR + o);
+            }
         float pk = peak;
         for (int i = 0; i < n; ++i) { outL[i] += l[i]; outR[i] += r[i]; pk = jmax (pk, std::abs (l[i]), std::abs (r[i])); }
         peak = pk;
@@ -1057,7 +1156,7 @@ public:
             const ScopedLock l (lock);
             for (auto& t : tracks) existing[t->id] = t;
         }
-        struct Change { std::shared_ptr<TrackPlayer> track; std::unique_ptr<Instrument> instrument; String key; bool newInstrument; TrackSettings settings; std::shared_ptr<const std::vector<SongNote>> notes; std::shared_ptr<const std::vector<ClipSegment>> clips; const AudioBuffer<float>* ir = nullptr; };
+        struct Change { std::shared_ptr<TrackPlayer> track; std::unique_ptr<Instrument> instrument; String key; bool newInstrument; TrackSettings settings; Automation automation; std::shared_ptr<const std::vector<SongNote>> notes; std::shared_ptr<const std::vector<ClipSegment>> clips; const AudioBuffer<float>* ir = nullptr; };
         std::vector<Change> changes;
         if (auto* arr = song["tracks"].getArray())
             for (auto& tv : *arr)
@@ -1070,7 +1169,7 @@ public:
                     track->id = id;
                     track->prepare (rate, block);
                 }
-                Change c { track, nullptr, {}, false, parseTrackSettings (tv), parseNotes (tv["notes"]), parseClips (tv["clips"]) };
+                Change c { track, nullptr, {}, false, parseTrackSettings (tv), Automation::parse (tv["automation"]), parseNotes (tv["notes"]), parseClips (tv["clips"]) };
                 c.ir = c.settings.amp.cab == "ir" && irs ? irs (c.settings.amp.irPath) : nullptr;
                 const var inst = tv["instrument"];
                 c.key = JSON::toString (inst, true);
@@ -1090,6 +1189,7 @@ public:
         {
             if (c.newInstrument) { trash.push_back (std::move (c.track->instrument)); c.track->instrument = std::move (c.instrument); c.track->instrumentKey = c.key; }
             c.track->settings = c.settings;
+            c.track->automation = c.automation;
             c.track->settingsChanged = true;
             c.track->notes = c.notes;
             c.track->clips = c.clips;
@@ -1113,6 +1213,7 @@ public:
     {
         const ScopedLock l (lock);
         position = beat;
+        anchor = beat;
         resumeClips = true;   // clips already under way at `beat` pick up partway
         waitSamples = std::max<int64> (0, delaySamples);
         countInClicks = countIn;
@@ -1131,6 +1232,7 @@ public:
     {
         const ScopedLock l (lock);
         position = beat;
+        anchor = beat;
         for (auto& t : tracks) t->stopClips (0);
         resumeClips = true;
     }
@@ -1171,10 +1273,13 @@ public:
 
         applyLiveNotes();
         songPosition = { tempo.bpmAt (position), position, playing && waitSamples == 0 };
+        blockBeats.pieces.clear();
+        blockBeats.parked = position;
+        blockBeats.playing = playing;
         if (playing) schedule (n);
         sends.setTempo (tempo.bpmAt (position));
         for (auto& t : tracks)
-            t->render (n, outL, outR, revL, revR, echoL, echoR);
+            t->render (n, outL, outR, revL, revR, echoL, echoR, blockBeats);
         sends.process (revL, revR, echoL, echoR, outL, outR, n);
         master.process (outL, outR, n);
         float pk = masterPeak;
@@ -1230,6 +1335,8 @@ private:
     AudioBuffer<float> bus;
 
     bool resumeClips = false;
+    double anchor = 0;       // where the current pass began (automation ramps start from here)
+    BlockBeats blockBeats;
     bool playing = false, countInClicks = false, cycleOn = false, metronome = false, meterCompound = false, masterChanged = true;
     double position = 0, cycleStart = 0, cycleEnd = 4, meterPulse = 1;
     int meterNum = 4;
@@ -1301,6 +1408,7 @@ private:
                 wrap = true;
             }
             if (resumeClips) { resumeClipsAt (position, done); resumeClips = false; }
+            if (segment > 0) blockBeats.pieces.push_back ({ done, position, (endBeat - position) / segment, anchor });
             queue (position, endBeat, done, secStart);
             position = endBeat;
             done += segment;
@@ -1309,6 +1417,7 @@ private:
                 // Back to the cycle start: what was playing stops (with its short fade) and clips that
                 // span the start resume partway, as on the app's cycle repeats.
                 position = cycleStart;
+                anchor = cycleStart;
                 for (auto& t : tracks) t->stopClips (jmin (done, n - 1));
                 resumeClips = true;
             }

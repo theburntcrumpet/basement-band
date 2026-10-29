@@ -401,6 +401,43 @@ module.exports = async function native(win, app) {
     }
     return worst <= 1 ? 'ok per band: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('native song engine matches the app: automation', `
+    const { renderProject, resolveInstrument } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const rate = Tone.getContext().sampleRate;
+    const loudness = (b, len, ch) => { const out = []; const x = b.getChannelData(ch); for (let w = 0; w + 2400 <= len; w += 2400) { let e = 0; for (let i = w; i < w + 2400; i++) e += x[i] * x[i]; out.push(10 * Math.log10(e / 2400 + 1e-18)); } return out; };
+    const notes = [{ t: 0, d: 8, n: 48, v: 0.8 }, { t: 0, d: 8, n: 55, v: 0.7 }, { t: 0, d: 8, n: 64, v: 0.7 }];
+    const cases = [
+      ['volume ramp', { volume: [{ t: 0, v: -30 }, { t: 4, v: 0 }, { t: 6, v: -10 }] }, 0],
+      ['pan sweep', { pan: [{ t: 0, v: -1 }, { t: 8, v: 1 }] }, 0],
+      ['tone and EQ', { tone: [{ t: 0, v: 0.2 }, { t: 8, v: 1 }], eqHigh: [{ t: 2, v: -12 }, { t: 6, v: 12 }] }, 0],
+      ['reverb send', { reverb: [{ t: 0, v: 0 }, { t: 4, v: 1 }] }, 0],
+      ['starting mid-ramp', { volume: [{ t: 0, v: -30 }, { t: 8, v: 0 }] }, 3],
+    ];
+    const report = [];
+    let worst = 0;
+    for (const [name, automation, from] of cases) {
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack('instrument', 'warm-pad', 'Pad'), { reverb: 0, echo: 0, automation });
+      t.regions.push({ id: 'r', start: 0, length: 8, loopLength: 8, notes });
+      p.tracks.push(t);
+      const web = await renderProject(p, new Map(), { start: from, end: 8, tail: 0.5, sampleRate: rate });
+      const song = songForNative(p, new Map([[t.id, await resolveInstrument('warm-pad')]]));
+      const nat = await renderNative(song, { start: from, end: 8, tail: 0.5, sampleRate: rate });
+      const len = Math.min(web.length, nat.length);
+      let max = 0;
+      for (const ch of [0, 1]) {
+        const a = loudness(web, len, ch), b = loudness(nat, len, ch);
+        max = Math.max(max, ...a.map((v, i) => (Math.max(v, b[i]) > -50 ? Math.abs(v - b[i]) : 0)));
+      }
+      // With the send fully open the (random) reverb tail dominates some windows; see the reverb cases above.
+      const wet = !!automation.reverb;
+      worst = Math.max(worst, wet ? max / 3 : max);
+      report.push(name + ' ' + max.toFixed(1) + ' dB');
+    }
+    return worst <= 1.5 ? 'ok loudness per 50 ms, each side: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
+
   for (const r of results) console.log(r);
   app.quit();
 };
