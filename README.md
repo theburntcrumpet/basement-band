@@ -115,7 +115,8 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
 - **Audio doesn't follow tempo changes:** recordings and samples keep their speed and length.
 - **Automation covers the mixer settings** (volume, pan, reverb, echo, tone, EQ), not effect or amp
   knobs yet, and lanes don't move with regions.
-- **Songs embed recordings as WAV inside the `.bband` file**, so songs with long takes get large.
+- **Songs embed their recordings** (as lossless FLAC, about half the size of WAV) inside the `.bband`
+  file, so songs with many long takes still get large.
 - **User instruments are referenced, not copied:** move a SoundFont/SFZ and songs using it fall back
   to a stand-in synth until it is re-imported.
 - **SoundFont/SFZ:** no `.sf3` (compressed) files; the sustain pedal works, but other MIDI controllers (mod
@@ -135,7 +136,8 @@ Roughly in priority order:
 3. ~~MIDI file import/export~~ (done).
 4. **Tempo-following audio** (time-stretching loops and recordings).
 5. **Tempo and time-signature changes** within a song.
-6. **Song files with audio stored alongside** (or compressed) instead of embedded WAV.
+6. ~~Smaller song files~~ (recordings now stored as FLAC); optionally keep audio in a folder beside
+   the song.
 7. **Native low-latency audio helper** (JACK/PipeWire on Linux, ASIO/WASAPI exclusive on Windows)
    running the amp sim for sub-10 ms guitar monitoring; the same helper would host
    **VST3/CLAP plugins** as a new instrument source.

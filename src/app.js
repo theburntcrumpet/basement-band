@@ -4,7 +4,8 @@ import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate
 import { Engine, renderProject, songEnd, expandRegion } from './engine/engine.js';
 import { getInstrument, isKit, loadBuffer } from './engine/instruments.js';
 import { setLibrary, inspect, registerDefs, exportDefs, INSTRUMENT_FILE } from './engine/user-instruments.js';
-import { encodeWav, toBase64, fromBase64 } from './engine/wav.js';
+import { toBase64, fromBase64 } from './engine/wav.js';
+import { encodeFlac } from './engine/formats/flac.js';
 import { renderFx } from './engine/fxgen.js';
 import { EXPORT_FORMATS, MP3_RATES, encodeAudio } from './engine/export.js';
 import { parseMidi, writeMidi, gmToInstrument, instrumentToGm } from './music/midifile.js';
@@ -964,17 +965,25 @@ class App {
     store.load(newProject());
   }
 
-  async save(saveAs = false) {
+  // The .bband file: the song plus its recordings, stored as lossless FLAC (older songs used WAV;
+  // both decode on open).
+  serializeSong() {
     const used = new Set(store.project.tracks.flatMap(t => t.regions.map(r => r.audioId).filter(Boolean)));
     const audio = {};
     for (const id of used) {
       const buf = this.engine.audioPool.get(id);
-      if (buf) audio[id] = toBase64(encodeWav(buf, 16));
+      if (!buf) continue;
+      const channels = Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c));
+      audio[id] = toBase64(encodeFlac(channels, buf.sampleRate));
     }
     // Songs remember which of the user's instruments they use, so they can say what's missing elsewhere.
     const userIds = store.project.tracks.map(t => t.instrument).filter(id => id?.startsWith('user:'));
     const project = { ...store.project, userInstruments: exportDefs(userIds) };
-    const data = JSON.stringify({ format: 'basement-band', version: 1, project, audio });
+    return JSON.stringify({ format: 'basement-band', version: 2, project, audio });
+  }
+
+  async save(saveAs = false) {
+    const data = this.serializeSong();
     if (!window.host) {
       download(new Blob([data], { type: 'application/json' }), 'My Song.bband');
       return;

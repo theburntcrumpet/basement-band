@@ -101,13 +101,19 @@ module.exports = async function flows(win, app) {
     return t.regions.length === before + 1 && r.notes.length === 4 ? 'ok start=' + r.start + ' notes=' + r.notes.map(n => n.t.toFixed(2)).join(',') : 'regions ' + t.regions.length + ' notes ' + r?.notes.length;`);
 
   await check('save/open round trip', `
-    const { toBase64, encodeWav, fromBase64 } = await import('./engine/wav.js');
+    // The real save format: recordings are stored as FLAC inside the song file.
     const used = store.project.tracks.flatMap(t => t.regions.map(r => r.audioId).filter(Boolean));
-    const audio = Object.fromEntries(used.map(id => [id, toBase64(encodeWav(app.engine.audioPool.get(id)))]));
-    const file = JSON.parse(JSON.stringify({ format: 'basement-band', version: 1, project: store.project, audio }));
-    const back = await Tone.getContext().rawContext.decodeAudioData(fromBase64(audio[used[0]]));
-    const orig = app.engine.audioPool.get(used[0]);
-    return Math.abs(back.duration - orig.duration) < 0.01 && file.project.tracks.length === store.project.tracks.length ? 'ok ' + used.length + ' audio clips' : 'mismatch';`);
+    const data = app.serializeSong();
+    const file = JSON.parse(data);
+    const wavBytes = used.reduce((n, id) => { const b = app.engine.audioPool.get(id); return n + b.length * b.numberOfChannels * 2; }, 0);
+    const flacBytes = Object.values(file.audio).reduce((n, b64) => n + b64.length * 0.75, 0);
+    const { fromBase64 } = await import('./engine/wav.js');
+    for (const id of used) {
+      const back = await Tone.getContext().rawContext.decodeAudioData(fromBase64(file.audio[id]));
+      const orig = app.engine.audioPool.get(id);
+      if (Math.abs(back.duration - orig.duration) > 0.01) return 'duration ' + back.duration + ' vs ' + orig.duration;
+    }
+    return file.version === 2 && file.project.tracks.length === store.project.tracks.length ? 'ok ' + used.length + ' audio clips as FLAC (' + Math.round(flacBytes / 1024) + ' KB vs ' + Math.round(wavBytes / 1024) + ' KB WAV)' : 'mismatch';`);
 
   await check('export full song', `
     const { renderProject, songEnd } = await import('./engine/engine.js');
