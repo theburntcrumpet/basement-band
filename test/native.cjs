@@ -239,6 +239,47 @@ module.exports = async function native(win, app) {
     }
     return worst <= 1.5 && worstEnv <= 2 ? 'ok (band/envelope) ' + report.join('; ') : 'differences (band/envelope): ' + report.join('; ');`);
 
+  await check('native song engine matches the app: SoundFont instruments (FluidR3)', `
+    const path = '/usr/share/soundfonts/FluidR3_GM.sf2';
+    if (!(await window.host.allowInstrumentFile(path))) return 'ok skipped (no FluidR3 here)';
+    await app.importInstrumentPaths([path]);
+    const entry = app.settings.userInstruments.find(e => e.path === path);
+    if (!entry) return 'import failed';
+    const { instrumentId } = await import('./engine/user-instruments.js');
+    const { renderProject, resolveInstrument } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const rate = Tone.getContext().sampleRate;
+    const rmsEnv = (b, n) => { const out = []; const l = b.getChannelData(0), r = b.getChannelData(1); for (let w = 0; w + 2400 <= n; w += 2400) { let e = 0; for (let i = w; i < w + 2400; i++) { const m = 0.5 * (l[i] + r[i]); e += m * m; } out.push(10 * Math.log10(e / 2400 + 1e-18)); } return out; };
+    const cases = [
+      ['piano', { bank: 0, program: 0 }, [{ t: 0, d: 1, n: 60, v: 0.8 }, { t: 0, d: 1, n: 64, v: 0.6 }, { t: 1.5, d: 2, n: 43, v: 1 }]],
+      ['strings (loop)', { bank: 0, program: 48 }, [{ t: 0, d: 3.5, n: 55, v: 0.9 }, { t: 0, d: 3.5, n: 62, v: 0.7 }]],
+      ['synth lead', { bank: 0, program: 81 }, [{ t: 0, d: 1, n: 69, v: 0.9 }, { t: 1, d: 1, n: 72, v: 0.5 }, { t: 2, d: 1.5, n: 76, v: 1 }]],
+      ['drums', { bank: 128, program: 0 }, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5].flatMap((t, i) => [{ t, d: 0.25, n: 42, v: 0.7 }, { t, d: 0.25, n: i % 2 ? 38 : 36, v: 0.9 }])],
+    ];
+    const report = [];
+    let worst = 0;
+    for (const [name, preset, notes] of cases) {
+      const id = instrumentId(entry, preset);
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack(preset.bank === 128 ? 'drums' : 'instrument', id, name), { reverb: 0, echo: 0 });
+      t.regions.push({ id: 'r', start: 0, length: 4, loopLength: 4, notes });
+      p.tracks.push(t);
+      const web = await renderProject(p, new Map(), { start: 0, end: 4, tail: 1.5, sampleRate: rate });
+      const song = songForNative(p, new Map([[t.id, await resolveInstrument(id)]]));
+      if (!song.tracks[0].instrument?.regions?.length) return name + ': no regions';
+      await new Promise(r => setTimeout(r, 500));
+      const nat = await renderNative(song, { start: 0, end: 4, tail: 1.5, sampleRate: rate });
+      const n = Math.min(web.length, nat.length);
+      const a = rmsEnv(web, n), b = rmsEnv(nat, n);
+      const diffs = a.map((v, i) => (Math.max(v, b[i]) > -50 ? Math.abs(v - b[i]) : 0));
+      const max = Math.max(...diffs);
+      worst = Math.max(worst, max);
+      const where = diffs.map((d, i) => (d > 1 ? (i * 0.05).toFixed(2) + 's ' + a[i].toFixed(1) + '/' + b[i].toFixed(1) : null)).filter(Boolean).slice(0, 4).join(', ');
+      report.push(name + ' ' + max.toFixed(1) + ' dB' + (where ? ' at ' + where : ''));
+    }
+    return worst <= 1.5 ? 'ok loudness per 50 ms: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

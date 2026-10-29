@@ -416,6 +416,7 @@ const effectSpecs = nodes => nodes.map(n => ({ name: n.name, options: n.get() })
 // Built from the real Tone objects so every default matches.
 export function nativeParts(id) {
   const def = getInstrument(id);
+  if (def.type === 'user') return { kind: 'multisampler', effects: [], volume: def.volume || 0 };
   if (def.type === 'synth') {
     const chain = SYNTHS[def.preset]();
     const [synth, ...fx] = chain;

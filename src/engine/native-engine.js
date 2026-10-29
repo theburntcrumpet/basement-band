@@ -59,6 +59,11 @@ export function nativeInstrument(id, buffers) {
     for (const [note, buffer] of Object.entries(buffers || {})) zones[noteToMidi(note)] = upload(buffer);
     return { kind: 'sampler', zones, attack: def.attack || 0, release: def.release ?? 0.5, curve: 'exponential', ...parts };
   }
+  if (def.type === 'user') {
+    // SoundFont/SFZ/folder regions as the loader normalised them, each pointing at its uploaded sample.
+    const regions = (buffers?.regions || []).filter(r => r.buffer).map(r => ({ ...r, buffer: undefined, sample: upload(r.buffer) }));
+    return { ...parts, regions, initialSwitch: buffers?.initialSwitch ?? null, cc: buffers?.cc || {} };
+  }
   if (def.type === 'kit') {
     const pieces = {};
     for (const [midi, layers] of Object.entries(buffers || {})) pieces[midi] = layers.map(upload);

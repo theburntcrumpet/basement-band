@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 
 namespace bb
 {
@@ -364,6 +365,328 @@ protected:
 private:
     std::map<int, std::vector<std::shared_ptr<Sample>>> pieces;
     VoicePool pool;
+};
+
+//==============================================================================
+// multisampler.js MultiSampler: SoundFont/SFZ/folder instruments. Regions arrive as the app's loader
+// normalised them (keys, velocities, conditions, envelopes, loops, filters), each with its sample.
+class MultiSamplerInstrument final : public ChainedInstrument
+{
+public:
+    MultiSamplerInstrument (const var& d, SamplePool& pool)
+    {
+        if (auto* arr = d["regions"].getArray())
+            for (auto& rv : *arr)
+                if (auto s = pool.get (rv["sample"].toString()))
+                {
+                    Region r;
+                    r.sample = s;
+                    r.lokey = rv.getProperty ("lokey", 0); r.hikey = rv.getProperty ("hikey", 127);
+                    r.lovel = rv.getProperty ("lovel", 1); r.hivel = rv.getProperty ("hivel", 127);
+                    if (auto* cs = rv["conds"].getArray()) for (auto& c : *cs) r.conds.push_back ({ (int) c["cc"], (int) c["lo"], (int) c["hi"] });
+                    r.swLast = rv["swLast"].isVoid() ? -1 : (int) rv["swLast"];
+                    r.swDown = rv["swDown"].isVoid() ? -1 : (int) rv["swDown"];
+                    if (auto* sw = rv["swRange"].getArray(); sw != nullptr && sw->size() == 2)
+                        for (int k = (int) (*sw)[0]; k <= (int) (*sw)[1]; ++k) swKeys.insert (k);
+                    r.trigger = rv.getProperty ("trigger", "attack").toString();
+                    r.seqLength = rv.getProperty ("seqLength", 1); r.seqPosition = rv.getProperty ("seqPosition", 1);
+                    r.lorand = rv.getProperty ("lorand", 0.0); r.hirand = rv.getProperty ("hirand", 1.0);
+                    r.group = rv.getProperty ("group", 0); r.offBy = rv.getProperty ("offBy", 0);
+                    r.root = rv.getProperty ("root", 60); r.keytrack = rv.getProperty ("keytrack", 1.0); r.tune = rv.getProperty ("tune", 0.0);
+                    const String mode = rv.getProperty ("loopMode", "none").toString();
+                    r.loopMode = mode;
+                    r.loopStart = rv.getProperty ("loopStart", 0.0); r.loopEnd = rv.getProperty ("loopEnd", 0.0);
+                    r.offset = rv.getProperty ("offset", 0.0); r.offsetRandom = rv.getProperty ("offsetRandom", 0.0);
+                    r.end = rv["end"].isVoid() ? -1.0 : (double) rv["end"];
+                    r.gainDb = rv.getProperty ("gainDb", 0.0); r.pan = rv.getProperty ("pan", 0.0); r.veltrack = rv.getProperty ("veltrack", 1.0);
+                    if (auto* vc = rv["velcurve"].getArray()) for (auto& p : *vc) if (auto* xy = p.getArray()) r.velcurve.push_back ({ (double) (*xy)[0], (double) (*xy)[1] });
+                    r.env = parseEnv (rv["env"]);
+                    const var f = rv["filter"];
+                    if (f.isObject())
+                    {
+                        r.hasFilter = true;
+                        r.filterType = ToneFilter::parseType (f.getProperty ("type", "lowpass").toString());
+                        r.cutoff = f.getProperty ("cutoff", 20000.0); r.resonance = f.getProperty ("resonance", 0.0);
+                        r.filterKeytrack = f.getProperty ("keytrack", 0.0); r.keycenter = f.getProperty ("keycenter", 60.0);
+                        r.filterVeltrack = f.getProperty ("veltrack", 0.0); r.egDepth = f.getProperty ("egDepth", 0.0);
+                        r.filterEnv = parseEnv (f["eg"]);
+                    }
+                    regions.push_back (std::move (r));
+                }
+        lastSwitch = d["initialSwitch"].isVoid() ? -1 : (int) d["initialSwitch"];
+        if (auto* o = d["cc"].getDynamicObject())
+            for (auto& p : o->getProperties()) cc[p.name.toString().getIntValue()] = (int) p.value;
+    }
+
+    void noteOn (const NoteEvent& e) override { events.push_back ({ now + e.offset, true, e.midi, e.velocity, e.durationSamples }); }
+    void noteOff (int midi, int offset) override { events.push_back ({ now + offset, false, midi, 0, -1 }); }
+    void allNotesOff (int offset) override
+    {
+        for (auto& v : voices) if (v.active) stopVoice (v, now + offset, minRelease, true);
+        held.clear(); live.clear();
+    }
+
+protected:
+    void renderSource (float* L, float* R, int n) override
+    {
+        std::stable_sort (events.begin(), events.end(), [] (auto& a, auto& b) { return a.at < b.at; });
+        for (auto& e : events)
+        {
+            if (e.at >= now + n) continue;
+            if (e.on) start (e);
+            else release (e.midi, e.at);
+            e.at = -1;
+        }
+        events.erase (std::remove_if (events.begin(), events.end(), [] (auto& e) { return e.at < 0; }), events.end());
+        for (auto& v : voices) if (v.active) renderVoice (v, L, R, n);
+        now += n;
+    }
+
+private:
+    struct Env { double delay = 0, attack = 0, hold = 0, decay = 0, sustain = 1, release = 0.05; };
+    struct Cond { int cc, lo, hi; };
+    struct Region
+    {
+        std::shared_ptr<Sample> sample;
+        int lokey = 0, hikey = 127, lovel = 1, hivel = 127, swLast = -1, swDown = -1, seqLength = 1, seqPosition = 1, group = 0, offBy = 0;
+        std::vector<Cond> conds;
+        String trigger = "attack", loopMode = "none";
+        double lorand = 0, hirand = 1, root = 60, keytrack = 1, tune = 0, loopStart = 0, loopEnd = 0, offset = 0, offsetRandom = 0, end = -1;
+        double gainDb = 0, pan = 0, veltrack = 1;
+        std::vector<std::pair<double, double>> velcurve;
+        Env env;
+        bool hasFilter = false;
+        Biquad::Type filterType = Biquad::lowpass;
+        double cutoff = 20000, resonance = 0, filterKeytrack = 0, keycenter = 60, filterVeltrack = 0, egDepth = 0;
+        Env filterEnv;
+        int seq = 0;
+    };
+
+    // A Web Audio param following the DAHDS envelope, then a setTargetAtTime release.
+    struct ParamEnv
+    {
+        Env e; double base = 0, depth = 1, rate = 48000;
+        int64 t = 0, releaseAt = -1; double tau = 0, releasedFrom = 0;
+        double value() const
+        {
+            const double s = (double) t / rate;
+            if (releaseAt >= 0 && t >= releaseAt)
+            {
+                const double rs = (double) (t - releaseAt) / rate;
+                return base + (releasedFrom - base) * std::exp (-rs / jmax (1e-6, tau));
+            }
+            return dahds (s);
+        }
+        double dahds (double s) const
+        {
+            const double tA = e.delay, tD = tA + e.attack + e.hold;
+            if (s < tA) return base;
+            if (s < tA + e.attack) return e.attack > 0.0005 ? base + depth * (s - tA) / e.attack : base + depth;
+            if (s < tD || e.sustain >= 1) return base + depth;
+            const double target = base + depth * e.sustain;
+            if (e.decay <= 0.0005) return target;
+            return target + (base + depth - target) * std::exp (-(s - tD) / (e.decay / 4));
+        }
+        // cancelAndHold at the release moment, then approach the base with time constant `tc`.
+        void release (int64 at, double tc) { if (releaseAt >= 0 && at >= releaseAt) return; const auto saved = t; t = at; releasedFrom = value(); t = saved; releaseAt = at; tau = tc; }
+    };
+
+    struct Voice
+    {
+        const Region* region = nullptr;
+        double pos = 0, step = 1;
+        int64 startAt = 0, endAt = 0;      // absolute samples
+        ParamEnv amp, cutoffCents;
+        Biquad fl, fr;
+        double filterFreq = 0;
+        bool active = false, released = false, oneShot = false;
+        int midi = -1;
+        float panX = 0.5f;
+    };
+
+    struct Event { int64 at; bool on; int midi; float velocity; int64 duration; };
+
+    std::vector<Region> regions;
+    std::vector<Voice> voices = std::vector<Voice> (96);
+    std::vector<Event> events;
+    std::set<int> swKeys;
+    std::map<int, int> cc;
+    std::map<int, float> held;
+    std::map<int, std::vector<Voice*>> live;
+    int lastSwitch = -1;
+    int64 now = 0;
+    Random random;
+    static constexpr double minRelease = 0.006;
+
+    static Env parseEnv (const var& o)
+    {
+        Env e;
+        if (! o.isObject()) return e;
+        e.delay = o.getProperty ("delay", 0.0); e.attack = o.getProperty ("attack", 0.0); e.hold = o.getProperty ("hold", 0.0);
+        e.decay = o.getProperty ("decay", 0.0); e.sustain = o.getProperty ("sustain", 1.0); e.release = o.getProperty ("release", 0.05);
+        return e;
+    }
+
+    bool matches (const Region& r, int midi, int v127) const
+    {
+        if (midi < r.lokey || midi > r.hikey || v127 < r.lovel || v127 > r.hivel) return false;
+        for (auto& c : r.conds) { auto it = cc.find (c.cc); const int value = it == cc.end() ? 0 : it->second; if (value < c.lo || value > c.hi) return false; }
+        if (r.swLast >= 0 && r.swLast != lastSwitch) return false;
+        if (r.swDown >= 0 && ! held.count (r.swDown)) return false;
+        return true;
+    }
+
+    double velocityGain (const Region& r, int v127) const
+    {
+        if (! r.velcurve.empty())
+        {
+            std::vector<std::pair<double, double>> pts { { 0, 0 } };
+            pts.insert (pts.end(), r.velcurve.begin(), r.velcurve.end());
+            if (std::none_of (r.velcurve.begin(), r.velcurve.end(), [] (auto& p) { return p.first == 127; })) pts.push_back ({ 127, 1 });
+            for (size_t i = 1; i < pts.size(); ++i)
+                if (v127 <= pts[i].first)
+                    return pts[i - 1].second + (pts[i].second - pts[i - 1].second) * ((v127 - pts[i - 1].first) / jmax (1.0, pts[i].first - pts[i - 1].first));
+            return pts.back().second;
+        }
+        const double x = v127 / 127.0;
+        return 1 - r.veltrack + r.veltrack * x * x;
+    }
+
+    void start (const Event& e)
+    {
+        const bool isLive = e.duration < 0;
+        if (isLive) held[e.midi] = e.velocity;
+        if (swKeys.count (e.midi)) { lastSwitch = e.midi; return; }
+        const int v127 = jlimit (1, 127, (int) std::lround (e.velocity * 127));
+        const int others = isLive ? (int) held.size() - 1 : 0;
+        const double rnd = random.nextDouble();
+        std::vector<Voice*> started;
+        for (auto& r : regions)
+        {
+            if (r.trigger == "release" || ! matches (r, e.midi, v127)) continue;
+            const int n = ++r.seq;
+            if (r.seqLength > 1 && ((n - 1) % r.seqLength) + 1 != r.seqPosition) continue;
+            if (rnd < r.lorand || rnd >= r.hirand) continue;
+            if (r.trigger == "first" && others > 0) continue;
+            if (r.trigger == "legato" && others == 0) continue;
+            if (r.group != 0)
+                for (auto& v : voices) if (v.active && v.region->offBy == r.group && v.endAt > e.at) stopVoice (v, e.at, minRelease, true);
+            started.push_back (startVoice (r, e.midi, v127, e.at));
+        }
+        if (isLive) live[e.midi] = started;
+        else
+        {
+            // A scheduled note releases itself after its length.
+            const auto at = e.at + e.duration;
+            for (auto* v : started) if (! v->oneShot) stopVoice (*v, at, v->region->env.release, false);
+            releaseTriggers (e.midi, at, v127);
+        }
+    }
+
+    void release (int midi, int64 at)
+    {
+        auto it = held.find (midi);
+        if (it == held.end()) return;
+        const int v127 = jlimit (1, 127, (int) std::lround (it->second * 127));
+        held.erase (it);
+        for (auto* v : live[midi]) if (v->active && ! v->oneShot) stopVoice (*v, at, v->region->env.release, false);
+        live.erase (midi);
+        releaseTriggers (midi, at, v127);
+    }
+
+    void releaseTriggers (int midi, int64 at, int v127)
+    {
+        if (swKeys.count (midi)) return;
+        for (auto& r : regions)
+            if (r.trigger == "release" && matches (r, midi, v127)) startVoice (r, midi, v127, at);
+    }
+
+    Voice* startVoice (const Region& r, int midi, int v127, int64 at)
+    {
+        Voice* v = nullptr;
+        for (auto& x : voices) if (! x.active || x.endAt <= at) { v = &x; break; }
+        if (v == nullptr)
+        {
+            v = &*std::min_element (voices.begin(), voices.end(), [] (auto& a, auto& b) { return a.startAt < b.startAt; });
+        }
+        *v = Voice();
+        v->region = &r;
+        v->active = true;
+        v->midi = midi;
+        v->startAt = at;
+        const auto& d = r.sample->data;
+        v->step = std::pow (2.0, ((midi - r.root) * r.keytrack * 100 + r.tune) / 1200.0) * r.sample->rate / rate;
+        const double offset = jmin (d.getNumSamples() / r.sample->rate - 0.001, r.offset + (r.offsetRandom > 0 ? random.nextDouble() * r.offsetRandom : 0.0));
+        v->pos = offset * r.sample->rate;
+        const bool looping = (r.loopMode == "continuous" || r.loopMode == "sustain") && r.loopEnd > r.loopStart;
+        const double playable = r.end >= 0 ? jmax (0.001, r.end - offset) : (d.getNumSamples() / r.sample->rate - offset);
+        const double playbackRate = v->step * rate / r.sample->rate;
+        v->endAt = looping ? std::numeric_limits<int64>::max() : at + (int64) std::llround (playable / playbackRate * rate);
+        v->oneShot = r.loopMode == "one_shot";
+        v->amp.e = r.env; v->amp.rate = rate; v->amp.base = 0;
+        v->amp.depth = std::pow (10.0, r.gainDb / 20) * velocityGain (r, v127);
+        if (r.hasFilter)
+        {
+            const double cents = r.filterKeytrack * (midi - r.keycenter) + r.filterVeltrack * (v127 / 127.0);
+            v->filterFreq = jlimit (10.0, rate / 2 - 100, r.cutoff * std::pow (2.0, cents / 1200));
+            v->cutoffCents.e = r.filterEnv; v->cutoffCents.rate = rate; v->cutoffCents.base = 0; v->cutoffCents.depth = r.egDepth;
+        }
+        // Chromium's StereoPannerNode treats these voices as stereo even for mono samples (L = R): at
+        // the centre both sides get the full signal, and hard left puts both on the left (+6 dB).
+        // Measured against the app; the stereo formula reproduces it.
+        v->panX = (float) jlimit (-1.0, 1.0, r.pan);
+        return v;
+    }
+
+    void stopVoice (Voice& v, int64 at, double rel, bool force)
+    {
+        if (! v.active || (v.released && ! force)) return;
+        v.released = true;
+        const int64 t = jmax (at, v.startAt) - v.startAt;
+        const double r = jmax (minRelease, rel);
+        v.amp.release (t, r / 5);
+        if (v.region->hasFilter && v.region->egDepth != 0) v.cutoffCents.release (t, jmax (minRelease, v.region->filterEnv.release) / 5);
+        const int64 end = at + (int64) std::llround ((r + 0.02) * rate);
+        if (end < v.endAt) v.endAt = end;
+    }
+
+    void renderVoice (Voice& v, float* L, float* R, int n)
+    {
+        const auto& r = *v.region;
+        const auto& d = r.sample->data;
+        const int len = d.getNumSamples();
+        const float* sl = d.getReadPointer (0);
+        const float* sr = d.getNumChannels() > 1 ? d.getReadPointer (1) : sl;
+        const bool looping = (r.loopMode == "continuous" || r.loopMode == "sustain") && r.loopEnd > r.loopStart;
+        const double ls = r.loopStart * r.sample->rate, le = r.loopEnd * r.sample->rate;
+        for (int i = 0; i < n; ++i)
+        {
+            const int64 abs = now + i;
+            if (abs < v.startAt) continue;
+            if (abs >= v.endAt) { v.active = false; return; }
+            const int k = (int) v.pos;
+            if (k + 1 >= len && ! looping) { v.active = false; return; }
+            const float f = (float) (v.pos - k);
+            float a = sl[k] + (sl[jmin (k + 1, len - 1)] - sl[k]) * f;
+            float b = sr[k] + (sr[jmin (k + 1, len - 1)] - sr[k]) * f;
+            v.amp.t = abs - v.startAt;
+            const float g = (float) v.amp.value();
+            a *= g; b *= g;
+            if (r.hasFilter)
+            {
+                v.cutoffCents.t = v.amp.t;
+                const double freq = jlimit (10.0, rate / 2 - 100, v.filterFreq * std::pow (2.0, v.cutoffCents.value() / 1200));
+                const double q = r.filterType == Biquad::lowpass || r.filterType == Biquad::highpass ? r.resonance : jmax (0.1, std::pow (10.0, r.resonance / 20));
+                if ((i & 15) == 0) { v.fl.set (r.filterType, freq, q, 0, rate); v.fr.set (r.filterType, freq, q, 0, rate); }
+                a = v.fl.process (a); b = v.fr.process (b);
+            }
+            const double p = v.panX;
+            if (p <= 0) { const double x = p + 1; L[i] += a + b * (float) std::cos (x * MathConstants<double>::halfPi); R[i] += b * (float) std::sin (x * MathConstants<double>::halfPi); }
+            else { L[i] += a * (float) std::cos (p * MathConstants<double>::halfPi); R[i] += b + a * (float) std::sin (p * MathConstants<double>::halfPi); }
+            v.pos += v.step;
+            if (looping && v.pos >= le) v.pos = ls + std::fmod (v.pos - ls, le - ls);
+        }
+    }
 };
 
 //==============================================================================
@@ -936,6 +1259,8 @@ private:
                             if (auto s = pool.get (id.toString())) pieces[p.name.toString().getIntValue()].push_back (s);
             return withChain (std::make_unique<KitInstrument> (std::move (pieces)), d);
         }
+        if (kind == "multisampler")
+            return withChain (std::make_unique<MultiSamplerInstrument> (d, pool), d);
         if (kind == "synthkit")
         {
             return withChain (std::make_unique<SynthKitInstrument> (d["parts"]), d);
