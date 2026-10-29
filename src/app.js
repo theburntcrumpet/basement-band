@@ -26,6 +26,8 @@ class App {
     this.bottomMode = null;
     this.recording = null;
     this.typing = { on: false, octave: 4, velocity: 0.8, down: new Set() };
+    this.sustain = false;
+    this.sustained = new Set();
     this.countIn = true;
     this.settings = {};
   }
@@ -189,6 +191,8 @@ class App {
   async stop() {
     const rec = this.recording;
     this.recording = null;
+    // Notes still held at Stop end here (the transport's position resets once it stops).
+    if (rec) rec.stopAt = this.engine.position();
     this.engine.stop();
     this.engine.setCursor(store.ui.playhead);
     this.engine.sync(store.project);
@@ -250,7 +254,7 @@ class App {
       });
       return;
     }
-    const end = this.engine.position();
+    const end = rec.stopAt ?? this.engine.position();
     for (const [n, o] of rec.open) rec.notes.push({ t: o.t, d: Math.max(0.05, end - o.t), n, v: o.v });
     if (!rec.notes.length) return;
     const first = Math.min(...rec.notes.map(n => n.t));
@@ -273,6 +277,8 @@ class App {
       return;
     }
     this.engine.resume();
+    // Re-striking a key the pedal is holding: end the held note first.
+    if (this.sustained.has(midi)) this.releaseKey(track, midi);
     this.engine.noteOn(track.id, midi, vel);
     const rec = this.recording;
     if (rec?.kind === 'midi' && rec.trackId === track.id) {
@@ -284,6 +290,13 @@ class App {
   noteOff(midi) {
     const track = store.selectedTrack;
     if (!track) return;
+    // With the sustain pedal down the note keeps sounding (and recording) until the pedal comes up.
+    if (this.sustain) { this.sustained.add(midi); return; }
+    this.releaseKey(track, midi);
+  }
+
+  releaseKey(track, midi) {
+    this.sustained.delete(midi);
     this.engine.noteOff(track.id, midi);
     const rec = this.recording;
     const o = rec?.open?.get(midi);
@@ -291,6 +304,18 @@ class App {
       rec.open.delete(midi);
       rec.notes.push({ t: o.t, d: Math.max(0.05, Math.max(rec.start, this.engine.position()) - o.t), n: midi, v: o.v });
     }
+  }
+
+  // Sustain pedal (MIDI CC64, or Tab in Musical Typing). Recorded notes simply last until it lifts.
+  setSustain(on) {
+    if (on === this.sustain) return;
+    this.sustain = on;
+    if (!on) {
+      const track = store.selectedTrack;
+      if (track) for (const midi of [...this.sustained]) this.releaseKey(track, midi);
+      this.sustained.clear();
+    }
+    if (this.typing.on) this.renderTyping();
   }
 
   // ------------------------------------------------------------ input monitoring
@@ -1128,13 +1153,14 @@ class App {
       else { keys.append(h('div', { class: 'white' + (t.down.has(midi) ? ' down' : '') }, label)); white++; }
     });
     $('#typing').replaceChildren(
-      h('div', { class: 'title' }, h('span', {}, `Musical Typing — C${t.octave}`), h('span', {}, `Z/X octave • C/V velocity ${Math.round(t.velocity * 127)}`)),
+      h('div', { class: 'title' }, h('span', {}, `Musical Typing — C${t.octave}`), h('span', {}, `Z/X octave • C/V velocity ${Math.round(t.velocity * 127)} • Tab sustain${this.sustain ? ' ●' : ''}`)),
       keys);
   }
 
   typingKey(e, down) {
     const t = this.typing;
     const k = e.key.toLowerCase();
+    if (k === 'tab') { if (!e.repeat) this.setSustain(down); return true; }
     if (down && !e.repeat) {
       if (k === 'z') { t.octave = Math.max(0, t.octave - 1); this.renderTyping(); return true; }
       if (k === 'x') { t.octave = Math.min(8, t.octave + 1); this.renderTyping(); return true; }
@@ -1242,6 +1268,7 @@ class App {
             const cmd = status & 0xf0;
             if (cmd === 0x90 && vel > 0) this.noteOn(note, vel / 127);
             else if (cmd === 0x80 || (cmd === 0x90 && vel === 0)) this.noteOff(note);
+            else if (cmd === 0xb0 && note === 64) this.setSustain(vel >= 64);
           };
         }
       };

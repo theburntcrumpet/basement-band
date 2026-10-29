@@ -115,8 +115,8 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
 - **Songs embed recordings as WAV inside the `.bband` file**, so songs with long takes get large.
 - **User instruments are referenced, not copied:** move a SoundFont/SFZ and songs using it fall back
   to a stand-in synth until it is re-imported.
-- **SoundFont/SFZ:** no `.sf3` (compressed) files; MIDI controllers (mod wheel, sustain pedal) don't
-  change sounds yet; large libraries load fully into memory.
+- **SoundFont/SFZ:** no `.sf3` (compressed) files; the sustain pedal works, but other MIDI controllers (mod
+  wheel, pitch bend) don't change sounds yet; large libraries load fully into memory.
 - **MIDI files:** can't import or export `.mid` yet.
 - **The Freesound recordings are high-quality previews** (128 kbps MP3), not the original WAVs.
 - **macOS isn't built or tested** (Electron supports it; it needs a Mac runner and signing).
@@ -127,7 +127,8 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
 Roughly in priority order:
 
 1. ~~Automation lanes~~ (done for mixer settings; effect and amp knobs next).
-2. **Sustain pedal and MIDI CC** support for SoundFont/SFZ instruments and recording.
+2. ~~Sustain pedal~~ (done: MIDI CC64 and Tab in Musical Typing). Still to do: mod wheel, pitch
+   bend and other MIDI CCs driving SoundFont/SFZ and synth sounds.
 3. **MIDI file import/export.**
 4. **Tempo-following audio** (time-stretching loops and recordings).
 5. **Tempo and time-signature changes** within a song.
@@ -148,7 +149,7 @@ Roughly in priority order:
 | Enter | Go to start (or cycle start) |
 | C | Cycle on/off |
 | K | Metronome |
-| Ctrl+K | Musical Typing (A–' play notes, Z/X octave, C/V velocity) |
+| Ctrl+K | Musical Typing (A–' play notes, Z/X octave, C/V velocity, Tab sustain) |
 | Y / B / E | Library / Smart Controls / Editor |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste notes (in the editor) or regions |
 | Ctrl+D | Duplicate selected notes or regions |

@@ -653,6 +653,34 @@ module.exports = async function flows(win, app) {
   await new Promise(r => setTimeout(r, 200));
   await shot('18-automation');
 
+  await check('sustain pedal: held notes last until the pedal lifts', `
+    store.dirty = false;
+    await app.newSong();
+    const t = app.addTrack('instrument', 'grand-piano', 'Pedal');
+    app.countIn = false;
+    app.seek(0);
+    await app.toggleRecord();
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    await wait(200);
+    app.setSustain(true);
+    app.noteOn(60, 0.8); await wait(150); app.noteOff(60);     // released by hand, held by the pedal
+    app.noteOn(64, 0.8); await wait(150); app.noteOff(64);
+    await wait(700);
+    app.noteOn(60, 0.8); await wait(100); app.noteOff(60);     // re-strike while held: new note
+    await wait(300);
+    app.setSustain(false);                                      // pedal up: both held notes end
+    app.noteOn(67, 0.8); await wait(300);                       // still down when Stop is pressed
+    await app.stop();
+    const notes = t.regions.at(-1)?.notes || [];
+    const spb = 60 / store.project.bpm;
+    const by = n => notes.filter(x => x.n === n).sort((a, b) => a.t - b.t);
+    const [c1, c2] = by(60), [e] = by(64), [g] = by(67);
+    if (!c1 || !c2 || !e || !g) return 'notes ' + JSON.stringify(notes.map(x => [x.n, x.t.toFixed(2), x.d.toFixed(2)]));
+    const secs = x => x.d * spb;
+    // First C is cut when it is re-struck; E rings until the pedal lifts; G ends at Stop, not as a blip.
+    const ok = secs(c1) > 0.8 && Math.abs(c1.t + c1.d - c2.t) < 0.05 && secs(e) > 1.1 && secs(g) > 0.2;
+    return ok ? 'ok C ' + secs(c1).toFixed(2) + 's (re-struck), E ' + secs(e).toFixed(2) + 's (pedal), G ' + secs(g).toFixed(2) + 's (held at Stop)' : JSON.stringify(notes.map(x => [x.n, x.t.toFixed(2), secs(x).toFixed(2)]));`);
+
   await check('piano roll follows the selected track and region', `
     store.dirty = false;
     await app.newSong();
