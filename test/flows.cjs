@@ -854,6 +854,29 @@ module.exports = async function flows(win, app) {
   await new Promise(r => setTimeout(r, 200));
   await shot('19-tempo');
 
+  await check('amp sustain: high-gain notes fade out instead of dropping away', `
+    const { renderProject } = await import('./engine/engine.js');
+    const { newProject, newTrack } = await import('./state.js');
+    const { defaultAmp } = await import('./engine/amp.js');
+    const rate = 48000, n = rate * 4;
+    const di = new AudioBuffer({ length: n, sampleRate: rate, numberOfChannels: 1 });
+    const d = di.getChannelData(0);
+    for (let i = 0; i < n; i++) { const t = i / rate; let v = 0; for (let k = 1; k <= 6; k++) v += Math.sin(2 * Math.PI * 110 * k * t) / k; d[i] = 0.3 * v * Math.exp(-t * 1.7); }
+    const render = async amp => {
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack('audio', null, 'G'), { reverb: 0, amp });
+      t.regions.push({ id: 'r', start: 0, length: 8, offset: 0, audioId: 'di' });
+      p.tracks.push(t);
+      const b = await renderProject(p, new Map([['di', di]]), { start: 0, end: 8, tail: 0, sampleRate: rate });
+      const x = b.getChannelData(0);
+      return s => { let m = 0; for (let i = Math.round(s * rate); i < Math.round((s + 0.2) * rate); i++) m = Math.max(m, Math.abs(x[i])); return 20 * Math.log10(m + 1e-12); };
+    };
+    const without = await render({ ...defaultAmp('metal'), gate: 0, sustain: 0 });
+    const withSus = await render({ ...defaultAmp('metal'), gate: 0 });
+    // Two seconds in, the note has dropped ~20 dB without sustain but is still near full level with it.
+    const a = without(2), b = withSus(2), start = withSus(0.2);
+    return b > a + 8 && start - b < 6 ? 'ok at 2 s: ' + a.toFixed(1) + ' dB without sustain, ' + b.toFixed(1) + ' dB with (start ' + start.toFixed(1) + ' dB)' : 'levels ' + [a, b, start].map(v => v.toFixed(1));`);
+
   await check('amp: new models and cabinet impulse responses', `
     store.dirty = false;
     await app.newSong();

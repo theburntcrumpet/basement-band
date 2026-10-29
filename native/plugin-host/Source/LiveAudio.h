@@ -373,6 +373,7 @@ private:
             s.amp.gain = num (a, "gain", 0.5f); s.amp.bass = num (a, "bass", 0.5f); s.amp.mid = num (a, "mid", 0.5f);
             s.amp.treble = num (a, "treble", 0.5f); s.amp.presence = num (a, "presence", 0.5f);
             s.amp.gate = num (a, "gate", 0.3f); s.amp.level = num (a, "level", 0.5f);
+            s.amp.sustain = num (a, "sustain", -1.0f);
         }
         return s;
     }

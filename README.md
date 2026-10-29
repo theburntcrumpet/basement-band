@@ -42,7 +42,7 @@ open it and start making music.
   1, 2 or both; latency compensation; count-in), or record MIDI keyboards and Musical Typing onto
   instrument tracks.
 - **Guitar & bass**: a "Guitar / Bass" track with an amp sim (Clean, Vintage, Crunch, Lead, Metal,
-  Bass: gain, tone stack, presence, noise gate) and a speaker cabinet: four built-in voicings, or
+  Bass: gain, sustain, tone stack, presence, noise gate) and a speaker cabinet: four built-in voicings, or
   **Load IR…** to use any cabinet impulse response WAV. Monitor through it while you play; recordings
   stay clean (DI), so you can change the amp afterwards. Monitoring latency depends on your OS audio
   (shown in the app; ~24 ms on Linux/PipeWire with Low-latency mode).

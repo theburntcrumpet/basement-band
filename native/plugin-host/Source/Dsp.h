@@ -181,13 +181,15 @@ struct Smoothed
 };
 
 //==============================================================================
-// amp-worklet.js: noise gate with hysteresis and hold.
+// amp-worklet.js: noise gate with hysteresis and hold, then sustain (lifts fading tails so
+// high-gain notes let go gradually). Keep in step with the worklet.
 struct Gate
 {
     double env = 0, gain = 0, envRelease = 0, attack = 0, release = 0;
+    double susEnv = 0, susGainDb = 0, susAttack = 0, susRelease = 0, susSmooth = 0;
     int hold = 0, holdSamples = 0;
     bool open = false;
-    float thresholdDb = -100;
+    float thresholdDb = -100, sustain = 0;
 
     void prepare (double sr)
     {
@@ -195,12 +197,16 @@ struct Gate
         attack = 1 - std::exp (-1 / (0.0008 * sr));
         release = 1 - std::exp (-1 / (0.08 * sr));
         holdSamples = (int) std::floor (0.05 * sr);
+        susAttack = 1 - std::exp (-1 / (0.003 * sr));
+        susRelease = 1 - std::exp (-1 / (0.15 * sr));
+        susSmooth = 1 - std::exp (-1 / (0.01 * sr));
     }
 
     void process (float* x, int n) noexcept
     {
         const bool off = thresholdDb <= -99;
         const double openAt = std::pow (10.0, thresholdDb / 20.0), closeAt = openAt * 0.5;
+        const double ratio = 1 + 5.0 * sustain, maxBoost = 30.0 * sustain;
         for (int i = 0; i < n; ++i)
         {
             const double peak = std::abs (x[i]);
@@ -209,7 +215,17 @@ struct Gate
             else if (env < closeAt && hold-- <= 0) open = false;
             const double target = off || open ? 1 : 0;
             gain += (target - gain) * (target > gain ? attack : release);
-            x[i] = (float) (x[i] * gain);
+            double boost = 1;
+            if (sustain > 0.001f)
+            {
+                susEnv += (peak - susEnv) * (peak > susEnv ? susAttack : susRelease);
+                const double envDb = 20 * std::log10 (susEnv + 1e-9);
+                double db = envDb < -24 ? jmin (maxBoost, (-24 - envDb) * (1 - 1 / ratio)) : 0.0;
+                if (envDb < -66) db *= jlimit (0.0, 1.0, (envDb + 80) / 14);
+                susGainDb += (db - susGainDb) * susSmooth;
+                boost = std::pow (10.0, susGainDb / 20);
+            }
+            x[i] = (float) (x[i] * gain * boost);
         }
     }
 };
@@ -220,7 +236,7 @@ struct AmpSettings
 {
     String model = "off", cab;     // cab: combo112 | open212 | closed412 | bass115 | off | ir
     String irPath;
-    float gain = 0.5f, bass = 0.5f, mid = 0.5f, treble = 0.5f, presence = 0.5f, gate = 0.3f, level = 0.5f;
+    float gain = 0.5f, bass = 0.5f, mid = 0.5f, treble = 0.5f, presence = 0.5f, gate = 0.3f, level = 0.5f, sustain = -1;  // -1: the model's default
 };
 
 struct TrackSettings
@@ -231,17 +247,17 @@ struct TrackSettings
     bool mute = false;
 };
 
-struct ModelInfo { int stages; double g0, g1, tighten, mid, bright, power, level; const char* cab; };
+struct ModelInfo { int stages; double g0, g1, tighten, mid, bright, power, level; const char* cab; float sustain; };
 
 inline const ModelInfo* ampModel (const String& id)
 {
     static const std::map<String, ModelInfo> models {
-        { "clean",   { 1, 1.0,  6.0,   70,  650, 3, 1.2, 1.6,  "open212" } },
-        { "vintage", { 1, 1.5,  20.0,  70,  600, 4, 1.4, 1.3,  "open212" } },
-        { "crunch",  { 1, 3.0,  60.0,  90,  800, 2, 1.8, 0.9,  "combo112" } },
-        { "lead",    { 2, 6.0,  120.0, 130, 700, 1, 2.4, 0.75, "closed412" } },
-        { "metal",   { 2, 12.0, 300.0, 170, 750, 2, 2.8, 0.6,  "closed412" } },
-        { "bass",    { 1, 1.0,  18.0,  30,  500, 0, 1.4, 1.2,  "bass115" } },
+        { "clean",   { 1, 1.0,  6.0,   70,  650, 3, 1.2, 1.6,  "open212",   0.0f } },
+        { "vintage", { 1, 1.5,  20.0,  70,  600, 4, 1.4, 1.3,  "open212",   0.0f } },
+        { "crunch",  { 1, 3.0,  60.0,  90,  800, 2, 1.8, 0.9,  "combo112",  0.35f } },
+        { "lead",    { 2, 6.0,  120.0, 130, 700, 1, 2.4, 0.75, "closed412", 0.65f } },
+        { "metal",   { 2, 12.0, 300.0, 170, 750, 2, 2.8, 0.6,  "closed412", 0.8f } },
+        { "bass",    { 1, 1.0,  18.0,  30,  500, 0, 1.4, 1.2,  "bass115",   0.25f } },
     };
     auto it = models.find (id);
     return it == models.end() ? nullptr : &it->second;
@@ -300,6 +316,7 @@ public:
         treble.set (Biquad::highshelf, 2600, 0.707, db (a.treble) + m.bright, rate);
         presence.set (Biquad::peaking, 4200, 1.2, db (a.presence) * 0.6, rate);
         gate.thresholdDb = a.gate < 0.02f ? -100.0f : -90.0f + a.gate * 60.0f;
+        gate.sustain = a.sustain < 0 ? m.sustain : a.sustain;
 
         // Cabinet: the IR if loaded, else the chosen (or the model's) filter voicing, or none.
         String choice = a.cab.isEmpty() ? String (m.cab) : a.cab;

@@ -1,7 +1,7 @@
 // Guitar/bass amp simulator, inserted at the start of a track's chain so it shapes both live
 // monitoring and playback of the clean (DI) recordings — the amp can be changed after recording.
 //
-// gate -> tighten -> preamp stage 1 -> (stage 2 for high gain) -> tone stack -> power amp -> cabinet -> level
+// gate + sustain -> tighten -> preamp stage 1 -> (stage 2 for high gain) -> tone stack -> power amp -> cabinet -> level
 
 const Tone = window.Tone;
 
@@ -43,6 +43,7 @@ export function cabChoice(amp) {
 
 export const AMP_KNOBS = [
   { key: 'gain', label: 'Gain', def: 0.5 },
+  { key: 'sustain', label: 'Sustain', def: 0.35 },
   { key: 'bass', label: 'Bass', def: 0.5 },
   { key: 'mid', label: 'Mid', def: 0.5 },
   { key: 'treble', label: 'Treble', def: 0.5 },
@@ -54,6 +55,8 @@ export const AMP_KNOBS = [
 export function defaultAmp(model = 'crunch') {
   const amp = { model, cab: AMP_MODELS[model]?.cab || 'combo112' };
   for (const k of AMP_KNOBS) amp[k.key] = k.def;
+  // Sustain (see amp-worklet.js) keeps high-gain notes ringing instead of dropping away.
+  amp.sustain = { clean: 0, vintage: 0, crunch: 0.35, lead: 0.65, metal: 0.8, bass: 0.25 }[model] ?? 0.35;
   if (model === 'clean') amp.gain = 0.35;
   if (model === 'lead') amp.gate = 0.45;
   if (model === 'metal') { amp.gate = 0.55; amp.mid = 0.32; amp.gain = 0.6; }
@@ -187,7 +190,10 @@ export class AmpSlot {
     n.treble.gain.setTargetAtTime(db(a.treble) + m.bright, t, 0.02);
     n.presence.gain.setTargetAtTime(db(a.presence) * 0.6, t, 0.02);
     // Gate knob: off at zero, then -90 dB (barely there) up to -30 dB (only loud playing gets through).
-    if (n.gate) n.gate.parameters.get('threshold').setValueAtTime(a.gate < 0.02 ? -100 : -90 + a.gate * 60, t);
+    if (n.gate) {
+      n.gate.parameters.get('threshold').setValueAtTime(a.gate < 0.02 ? -100 : -90 + a.gate * 60, t);
+      n.gate.parameters.get('sustain').setValueAtTime(a.sustain, t);
+    }
     const hasCab = n.cab.length > 0;
     n.cabOut.gain.setTargetAtTime(hasCab ? 1 : 0, t, 0.02);
     n.cabBypass.gain.setTargetAtTime(hasCab ? 0 : 0.6, t, 0.02);
