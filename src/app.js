@@ -13,11 +13,12 @@ import { defaultAmp } from './engine/amp.js';
 import { STYLES, partInstrument } from './music/band.js';
 import { KEY_NAMES } from './music/theory.js';
 import { TIME_SIGNATURES, meter, parseTimeSig, barBeat } from './music/meter.js';
+import { bpmAt, beatsFor } from './music/tempo.js';
 import { Arrange, setupBackgroundDrop } from './ui/arrange.js';
 import { Editor, TOOLS } from './ui/editor.js';
 import { SmartControls } from './ui/smart.js';
 import { Library, LOOPS } from './ui/library.js';
-import { $, h, toast, modal, confirmDialog, contextMenu, canvas2d, palette, knob } from './ui/dom.js';
+import { $, h, toast, modal, confirmDialog, contextMenu, canvas2d, palette, knob, promptNumber } from './ui/dom.js';
 
 const Tone = window.Tone;
 const TYPING_KEYS = ['a', 'w', 's', 'e', 'd', 'f', 't', 'g', 'y', 'h', 'u', 'j', 'k', 'o', 'l', 'p', ';', "'"];
@@ -86,7 +87,7 @@ class App {
 
   // Everything that affects what plays when: notes, regions, automation, tempo, meter, cycle, tracks.
   playbackPlan(p) {
-    return JSON.stringify([p.bpm, p.timeSig, p.cycle, p.tracks.map(t => [t.id, t.type, t.regions, t.automation])]);
+    return JSON.stringify([p.bpm, p.tempoChanges, p.timeSig, p.cycle, p.tracks.map(t => [t.id, t.type, t.regions, t.automation])]);
   }
 
   refresh() {
@@ -94,7 +95,7 @@ class App {
     this.arrange.render();
     this.renderBottom();
     if (this.library.tab === 'sounds') this.library.render();
-    $('#lcd-bpm').value = p.bpm;
+    this.showTempo();
     $('#lcd-key').value = p.key.root;
     $('#lcd-scale').value = p.key.scale;
     $('#lcd-time').value = meter(p.timeSig).label;
@@ -181,6 +182,7 @@ class App {
     if (this.bottomMode === 'editor') this.editor.setPlayhead(pos);
     const { bar, beat } = barBeat(pos, store.project.timeSig);
     $('#lcd-pos').textContent = `${bar}.${beat}`;
+    if (store.project.tempoChanges?.length) this.showTempo();
     this.arrange.updateMeters();
     this.drawInputMeter();
     const m = this.engine.masterMeter.getValue();
@@ -264,9 +266,8 @@ class App {
       if (!result) return toast('Nothing was recorded');
       const id = uid();
       this.engine.audioPool.set(id, result.buffer);
-      const spb = 60 / store.project.bpm;
-      store.update(() => {
-        track.regions.push({ id: uid(), name: 'Recording', start: result.startBeat, length: result.buffer.duration / spb, offset: 0, audioId: id, bpm: store.project.bpm });
+      store.update(p => {
+        track.regions.push({ id: uid(), name: 'Recording', start: result.startBeat, length: beatsFor(p, result.startBeat, result.buffer.duration), offset: 0, audioId: id, bpm: bpmAt(p, result.startBeat) });
       });
       return;
     }
@@ -601,6 +602,41 @@ class App {
       h('div', { class: 'actions' }, h('button', { class: 'text accent', onclick: () => close() }, 'Done'))));
   }
 
+  // ------------------------------------------------------------ tempo changes
+
+  tempoChangeAt(beat) {
+    return (store.project.tempoChanges || []).filter(c => c.beat <= beat + 1e-9).sort((a, b) => b.beat - a.beat)[0] || null;
+  }
+
+  // The LCD shows the tempo where the playhead is.
+  showTempo() {
+    const el = $('#lcd-bpm');
+    const bpm = Math.round(bpmAt(store.project, store.ui.playhead) * 10) / 10;
+    if (document.activeElement !== el && Number(el.value) !== bpm) el.value = bpm;
+  }
+
+  async editTempoChange(change) {
+    const bpm = await promptNumber(change ? 'Change tempo' : 'Add tempo change', 'Beats per minute', change?.bpm ?? Math.round(bpmAt(store.project, store.ui.playhead)), 40, 240);
+    if (bpm == null) return;
+    store.update(p => {
+      if (change) change.bpm = bpm;
+      else {
+        const bar = barBeats(p);
+        const beat = Math.max(bar, Math.round(store.ui.playhead / bar) * bar);
+        p.tempoChanges = [...(p.tempoChanges || []).filter(c => Math.abs(c.beat - beat) > 1e-6), { beat, bpm }];
+      }
+    });
+  }
+
+  addTempoChangeAt(beat) {
+    store.ui.playhead = beat;
+    this.editTempoChange(null);
+  }
+
+  removeTempoChange(change) {
+    store.update(p => { p.tempoChanges = (p.tempoChanges || []).filter(c => c !== change); });
+  }
+
   // ------------------------------------------------------------ clipboard (notes in the editor, or regions)
 
   copy(cut) {
@@ -654,7 +690,6 @@ class App {
     const at = store.ui.playhead;
     const list = this.selectedRegions().filter(({ region }) => at > region.start + 1e-3 && at < region.start + region.length - 1e-3);
     if (!list.length) return toast('Put the playhead inside a selected region to split it');
-    const spb = 60 / store.project.bpm;
     store.update(() => {
       for (const { track, region } of list) {
         const cut = at - region.start;
@@ -832,7 +867,7 @@ class App {
   async sampleBuffer(s) {
     if (s.gen) {
       const p = store.project;
-      return renderFx(s.gen, { bars: s.bars || 1, bpm: p.bpm, barBeats: barBeats(p) });
+      return renderFx(s.gen, { bars: s.bars || 1, bpm: bpmAt(p, store.ui.playhead), barBeats: barBeats(p) });
     }
     if (s.url) return loadBuffer(s.url);
     return Tone.getContext().rawContext.decodeAudioData(await window.host.readFile(s.path));
@@ -852,7 +887,6 @@ class App {
   addAudioBuffer(buffer, name, track, beat) {
     const id = uid();
     this.engine.audioPool.set(id, buffer);
-    const spb = 60 / store.project.bpm;
     store.update(p => {
       let target = track;
       if (!target || target.type !== 'audio') {
@@ -860,7 +894,7 @@ class App {
         p.tracks.push(target);
       }
       // Clips remember the tempo they arrived at, so they can follow later tempo changes.
-      target.regions.push({ id: uid(), name, start: beat, length: buffer.duration / spb, offset: 0, audioId: id, bpm: p.bpm });
+      target.regions.push({ id: uid(), name, start: beat, length: beatsFor(p, beat, buffer.duration), offset: 0, audioId: id, bpm: bpmAt(p, beat) });
       store.ui.selectedTrack = target.id;
     });
   }
@@ -1071,6 +1105,7 @@ class App {
     const empty = !store.project.tracks.length;
     store.update(p => {
       if (empty && file.bpm) p.bpm = Math.max(40, Math.min(240, Math.round(file.bpm)));
+      if (empty && file.tempos?.length > 1) p.tempoChanges = file.tempos.filter(t => t.beat > 0).map(t => ({ beat: t.beat, bpm: Math.max(40, Math.min(240, Math.round(t.bpm * 10) / 10)) }));
       if (empty && file.timeSig && TIME_SIGNATURES.includes(`${file.timeSig.num}/${file.timeSig.den}`)) p.timeSig = { ...file.timeSig };
       const bar = barBeats(p);
       const at = empty ? 0 : Math.floor(store.ui.playhead / bar) * bar;
@@ -1096,7 +1131,8 @@ class App {
         .map(n => ({ ...n, t: n.t - range.start, d: Math.min(n.d, range.end - n.t) }));
       return { name: t.name, program, drums: t.type === 'drums', notes };
     }).filter(t => t.notes.length);
-    return writeMidi({ bpm: p.bpm, timeSig: p.timeSig, tracks });
+    const tempos = (p.tempoChanges || []).filter(c => c.beat > range.start && c.beat < range.end).map(c => ({ beat: c.beat - range.start, bpm: c.bpm }));
+    return writeMidi({ bpm: bpmAt(p, range.start), tempos, timeSig: p.timeSig, tracks });
   }
 
   async runExport(formatId, range) {
@@ -1151,7 +1187,11 @@ class App {
     timeSel.addEventListener('change', () => this.setTimeSig(timeSel.value));
     $('#lcd-bpm').addEventListener('change', e => {
       const bpm = Math.max(40, Math.min(240, Number(e.target.value) || 110));
-      store.update(p => { p.bpm = bpm; });
+      // Edits the tempo in force at the playhead (the song's start tempo, or a tempo change).
+      store.update(p => {
+        const change = this.tempoChangeAt(store.ui.playhead);
+        if (change) change.bpm = bpm; else p.bpm = bpm;
+      });
     });
     $('#lcd-bpm').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); });
     $('#btn-play').addEventListener('click', () => this.togglePlay());

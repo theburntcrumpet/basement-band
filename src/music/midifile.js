@@ -77,6 +77,7 @@ export function parseMidi(arrayBuffer) {
   if (division & 0x8000) throw new Error('SMPTE-timed MIDI files are not supported');
   const ppq = division;
   let bpm = null, timeSig = null;
+  const tempos = [];
   const out = [];
   let o = 8 + v.getUint32(4);
   for (let t = 0; t < ntracks && o + 8 <= v.byteLength; t++) {
@@ -102,7 +103,11 @@ export function parseMidi(arrayBuffer) {
       if (b === 0xff) {
         const type = v.getUint8(pos.i++);
         const l = readVarLen(v, pos);
-        if (type === 0x51 && l === 3 && bpm == null) bpm = 60000000 / ((v.getUint8(pos.i) << 16) | (v.getUint8(pos.i + 1) << 8) | v.getUint8(pos.i + 2));
+        if (type === 0x51 && l === 3) {
+          const tb = 60000000 / ((v.getUint8(pos.i) << 16) | (v.getUint8(pos.i + 1) << 8) | v.getUint8(pos.i + 2));
+          if (bpm == null) bpm = tb;
+          tempos.push({ beat: tick / ppq, bpm: tb });
+        }
         if (type === 0x58 && l >= 2 && timeSig == null) timeSig = { num: v.getUint8(pos.i), den: 2 ** v.getUint8(pos.i + 1) };
         if (type === 0x03 && !name) name = str(v, pos.i, l).replace(/\0/g, '').trim();
         pos.i += l;
@@ -143,7 +148,8 @@ export function parseMidi(arrayBuffer) {
     });
     o = end;
   }
-  return { ppq, bpm: bpm ? Math.round(bpm * 10) / 10 : null, timeSig, tracks: out };
+  tempos.sort((a, b) => a.beat - b.beat);
+  return { ppq, bpm: bpm ? Math.round(bpm * 10) / 10 : null, tempos, timeSig, tracks: out };
 }
 
 // ------------------------------------------------------------------ writing
@@ -165,8 +171,15 @@ export function writeMidi(song, ppq = 480) {
   const conductor = [
     0, 0xff, 0x51, 3, (tempo >> 16) & 255, (tempo >> 8) & 255, tempo & 255,
     0, 0xff, 0x58, 4, song.timeSig?.num || 4, den, 24, 8,
-    0, 0xff, 0x2f, 0,
   ];
+  // Later tempo changes ({beat, bpm}) follow in time order.
+  let lastTick = 0;
+  for (const c of [...(song.tempos || [])].sort((a, b) => a.beat - b.beat)) {
+    const tick = Math.round(c.beat * ppq), us = Math.round(60000000 / c.bpm);
+    conductor.push(...varLen(tick - lastTick), 0xff, 0x51, 3, (us >> 16) & 255, (us >> 8) & 255, us & 255);
+    lastTick = tick;
+  }
+  conductor.push(0, 0xff, 0x2f, 0);
   const tracks = [chunk('MTrk', conductor)];
   let nextChannel = 0;
   for (const tr of song.tracks) {

@@ -788,6 +788,43 @@ module.exports = async function flows(win, app) {
     await app.stop();
     return used.factor > 1.3 ? 'ok clicks on every 90 bpm beat (max error ' + Math.max(...errs.map(e => e.off * 1000)).toFixed(1) + ' ms), factor ' + used.factor.toFixed(3) : 'live factor ' + used.factor;`);
 
+  await check('tempo changes: playback, export, LCD and MIDI follow the tempo map', `
+    store.dirty = false;
+    await app.newSong();
+    store.update(p => { p.bpm = 120; p.tempoChanges = [{ beat: 8, bpm: 60 }]; });
+    const t = app.addTrack('drums', 'kit-808', 'Beat');
+    store.update(() => { t.reverb = 0; t.regions.push({ id: 'b', start: 0, length: 16, loopLength: 16, notes: Array.from({ length: 16 }, (_, b) => ({ t: b, d: 0.25, n: 36, v: 1 })) }); });
+    const { renderProject } = await import('./engine/engine.js');
+    const { secAt } = await import('./music/tempo.js');
+    const buf = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 16, tail: 0.5 });
+    // Kicks every 0.5 s for 8 beats, then every 1 s.
+    const onsetNear = sec => { const d = buf.getChannelData(0), sr = buf.sampleRate; for (let i = Math.round((sec - 0.06) * sr); i < (sec + 0.1) * sr; i++) if (Math.abs(d[i]) > 0.05) return i / sr; return null; };
+    const errs = [2, 6, 8, 9, 12, 15].map(b => { const o = onsetNear(secAt(store.project, b)); return o == null ? 99 : Math.abs(o - secAt(store.project, b)); });
+    if (errs.some(e => e > 0.012)) return 'kick timing ' + errs.map(e => e.toFixed(3));
+    if (Math.abs(buf.duration - (4 + 8 + 0.5)) > 0.05) return 'export length ' + buf.duration;
+    // The LCD shows the tempo where the playhead is; editing it edits that section.
+    app.seek(10); app.showTempo();
+    if (document.querySelector('#lcd-bpm').value !== '60') return 'lcd ' + document.querySelector('#lcd-bpm').value;
+    const lcd = document.querySelector('#lcd-bpm'); lcd.value = 70; lcd.dispatchEvent(new Event('change'));
+    if (store.project.tempoChanges[0].bpm !== 70 || store.project.bpm !== 120) return 'lcd edit ' + JSON.stringify(store.project.tempoChanges);
+    // A marker shows in the ruler.
+    if (!document.querySelector('.tempo-marker')) return 'no marker';
+    // Live: the transport switches tempo as it passes the change.
+    app.seek(6);
+    await app.togglePlay();
+    await new Promise(r => setTimeout(r, 1500));
+    const live = app.engine.transport.bpm.value;
+    await app.stop();
+    if (Math.abs(live - 70) > 0.5) return 'live tempo ' + live;
+    // MIDI keeps the tempo change.
+    const { parseMidi } = await import('./music/midifile.js');
+    const m = parseMidi(app.exportMidi({ start: 0, end: 16 }).buffer);
+    const tempos = m.tempos.map(x => x.beat + '@' + Math.round(x.bpm)).join(',');
+    return tempos === '0@120,8@70' ? 'ok kicks on time across the change (max ' + Math.max(...errs.map(e => e * 1000)).toFixed(1) + ' ms), live 120 -> ' + live.toFixed(0) + ', MIDI ' + tempos : 'midi tempos ' + tempos;`);
+
+  await new Promise(r => setTimeout(r, 200));
+  await shot('19-tempo');
+
   await check('piano roll follows the selected track and region', `
     store.dirty = false;
     await app.newSong();

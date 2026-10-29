@@ -48,6 +48,12 @@ export class Arrange {
     }, { passive: false });
 
     this.ruler.addEventListener('mousedown', e => this.rulerDown(e));
+    this.ruler.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      const bar = this.meter.barBeats;
+      const beat = Math.max(bar, Math.round(this.beatFromClientX(e.clientX) / bar) * bar);
+      contextMenu(e.clientX, e.clientY, [{ label: `Add tempo change at bar ${Math.round(beat / bar) + 1}…`, action: () => this.app.addTempoChangeAt(beat) }]);
+    });
     this.ruler.addEventListener('mousemove', e => this.cycleHover(e));
     this.empty.addEventListener('click', e => {
       const action = e.target.closest('[data-action]')?.dataset.action;
@@ -120,6 +126,13 @@ export class Arrange {
       title: 'Cycle range: click to toggle; drag the middle to move it or an edge to resize',
     });
     items.push(h('div', { class: 'cycle-strip' }, range));
+    // Tempo changes: click to edit, drag to move (by bars), right-click to remove.
+    for (const change of p.tempoChanges || []) {
+      const marker = h('div', { class: 'tempo-marker', style: { left: change.beat * z + 'px' }, title: 'Tempo change: click to edit, drag to move, right-click to remove' }, `♩ ${change.bpm}`);
+      marker.addEventListener('mousedown', e => this.tempoMarkerDown(e, change));
+      marker.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); this.app.removeTempoChange(change); });
+      items.push(marker);
+    }
     this.ruler.replaceChildren(...items);
   }
 
@@ -492,6 +505,20 @@ export class Arrange {
       if (e.key === 'Escape') done(false);
     });
     input.addEventListener('blur', () => done(true));
+  }
+
+  tempoMarkerDown(e, change) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const bar = this.meter.barBeats, start = change.beat;
+    store.beginGesture();
+    drag(e, dx => {
+      change.beat = Math.max(bar, Math.round((start + dx / this.zoom) / bar) * bar);
+      this.app.refresh();
+    }, (_ev, moved) => {
+      store.endGesture();
+      if (!moved) this.app.editTempoChange(change);
+    });
   }
 
   // The top band of the ruler holds the cycle range; below it, click or drag to move the playhead.

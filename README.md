@@ -11,6 +11,8 @@ open it and start making music.
 - **Session Band**: pick a style (Pop, Rock, Funk, Lo-Fi, Jazz Trio, House, Ballad, Reggae, Country,
   Synthwave) and a chord progression, and it writes drums, bass, keys, guitar, pads and arps. Every
   part is an ordinary track you can edit, re-voice or re-roll.
+- **Tempo changes**: right-click the ruler to add one at a bar; drag the ♩ marker to move it, click
+  to edit, right-click to remove. The tempo box shows (and edits) the tempo at the playhead.
 - **Time signatures**: 2/4, 3/4, 4/4, 5/4, 6/8, 7/8, 9/8 and 12/8. Every band style adapts its
   grooves to the meter, and the metronome, count-in, ruler and editors follow it. Changing the
   meter keeps regions on their bars and rewrites band parts to fit.
@@ -113,7 +115,8 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
   (Settings → Audio performance; smallest Chromium buffers, and PipeWire's quantum lowered to 128 frames while
   monitoring). Getting below ~10 ms needs a native audio path (see the roadmap). Until then, your
   interface's hardware direct monitoring gives zero-latency (dry) monitoring while recording.
-- **One time signature and tempo per song:** no tempo or meter changes partway through.
+- **One time signature per song.** Tempo can change partway through (right-click the ruler), but
+  the meter can't yet. An audio clip spanning a tempo change follows the tempo where it starts.
 - **Time-stretching** (WSOLA) keeps pitch and timing but can smear very dense or percussive audio at
   big tempo changes (more than about ±30%).
 - **Automation covers the mixer settings** (volume, pan, reverb, echo, tone, EQ), not effect or amp
@@ -139,7 +142,7 @@ Roughly in priority order:
 3. ~~MIDI file import/export~~ (done).
 4. ~~Tempo-following audio~~ (done: clips time-stretch to the song tempo; Follow tempo can be turned
    off per clip).
-5. **Tempo and time-signature changes** within a song.
+5. ~~Tempo changes~~ within a song (done); time-signature changes still to do.
 6. ~~Smaller song files~~ (recordings now stored as FLAC); optionally keep audio in a folder beside
    the song.
 7. **Native low-latency audio helper** (JACK/PipeWire on Linux, ASIO/WASAPI exclusive on Windows)

@@ -2,6 +2,7 @@
 
 import { createInstrument, loadInstrumentBuffers, fallbackFor, getInstrument } from './instruments.js';
 import { meter } from '../music/meter.js';
+import { bpmAt, secAt, beatAt, secBetween, changesFrom, tempoPoints } from '../music/tempo.js';
 import { EQ_BANDS } from './eq.js';
 import { FxSlot } from './effects.js';
 import { AmpSlot } from './amp.js';
@@ -187,12 +188,14 @@ export function expandRegion(region) {
 // Tempo-following audio: a clip remembers the tempo it was recorded/imported at (region.bpm) and is
 // time-stretched to the song's tempo unless Follow tempo is off. Offsets stay in the recording's own
 // seconds; one beat of the clip lasts sourceSpb seconds of the original recording.
+// With tempo changes, a clip follows the tempo where it starts (split a clip at a tempo change if
+// it needs to follow both).
 export function stretchFactor(region, project) {
-  return region.followTempo !== false && region.bpm ? region.bpm / project.bpm : 1;
+  return region.followTempo !== false && region.bpm ? region.bpm / bpmAt(project, region.start) : 1;
 }
 
 export function sourceSpb(region, project) {
-  return 60 / (region.followTempo !== false && region.bpm ? region.bpm : project.bpm);
+  return 60 / (region.followTempo !== false && region.bpm ? region.bpm : bpmAt(project, region.start));
 }
 
 // Where an audio region's content plays: one segment per loop pass. Each pass starts `phase` beats
@@ -226,7 +229,7 @@ function once(fn) {
 
 // Automation: each curve point starts a linear ramp to the next, timed from the transport.
 // Playback starting mid-curve begins with the interpolated value; cycle repeats re-seed at the start.
-function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat, inCycleBefore }) {
+function scheduleAutomation(transport, track, node, sec, { from, cycle, isRepeat, inCycleBefore }) {
   for (const p of AUTO_PARAMS) {
     const points = curve(track, p.key);
     if (!points.length) continue;
@@ -234,7 +237,7 @@ function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat
     const play = r => time => {
       param.cancelScheduledValues(time);
       param.setValueAtTime(map(r.v), time);
-      if (r.to != null) param.linearRampToValueAtTime(map(r.toV), time + (r.to - r.at) * spb);
+      if (r.to != null) param.linearRampToValueAtTime(map(r.toV), time + sec(r.at, r.to));
     };
     for (const r of rampsFrom(points, from)) transport.schedule(once(play(r)), ticks(r.at));
     if (cycle) {
@@ -257,17 +260,26 @@ function scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat
 //   active:     a Set collecting live audio sources, so they can be stopped
 //   bufferFor:  region => {buffer, factor}: the audio to play (stretched to tempo) and its stretch factor
 export function scheduleProject(transport, project, nodes, audioPool, { from = 0, restartAt = from, cycle = null, isRepeat = () => false, active = null, bufferFor = null } = {}) {
-  const spb = 60 / project.bpm;
+  const sec = (a, b) => secBetween(project, a, b);
   const inCycleBefore = t => !!cycle && t >= cycle.start - 1e-9 && t < Math.min(from, cycle.end) - 1e-9;
   const onRepeat = fn => once(t => { if (isRepeat()) fn(t); });
+  // Tempo changes switch the transport's tempo as they pass (and replay on cycle repeats).
+  const setTempo = bpm => t => transport.bpm.setValueAtTime(bpm, t);
+  for (const c of changesFrom(project, from)) transport.schedule(once(setTempo(c.bpm)), ticks(c.beat));
+  if (cycle) {
+    transport.schedule(onRepeat(setTempo(bpmAt(project, cycle.start))), ticks(cycle.start));
+    for (const c of tempoPoints(project)) if (c.beat > 1e-9 && inCycleBefore(c.beat)) transport.schedule(onRepeat(setTempo(c.bpm)), ticks(c.beat));
+  }
   for (const track of project.tracks) {
     const node = nodes.get(track.id);
     if (!node) continue;
-    scheduleAutomation(transport, track, node, spb, { from, cycle, isRepeat, inCycleBefore });
+    scheduleAutomation(transport, track, node, sec, { from, cycle, isRepeat, inCycleBefore });
     for (const region of track.regions) {
       if (track.type === 'audio') {
         const { buffer, factor } = bufferFor ? bufferFor(region) : { buffer: audioPool.get(region.audioId), factor: 1 };
         if (!buffer) continue;
+        // The (stretched) clip plays at the tempo where it starts.
+        const spb = 60 / bpmAt(project, region.start);
         // One-shot sources at exact transport times (Tone's synced Player could start a clip twice).
         const ctx = node.input.context;
         for (const seg of audioSegments(region)) {
@@ -296,7 +308,7 @@ export function scheduleProject(transport, project, nodes, audioPool, { from = 0
         continue;
       }
       for (const n of expandRegion(region)) {
-        const note = time => node.instrument?.play(n.n, n.d * spb, time, n.v);
+        const note = time => node.instrument?.play(n.n, sec(n.t, n.t + n.d), time, n.v);
         if (n.t >= from - 1e-6) transport.schedule(once(note), ticks(n.t));
         else if (inCycleBefore(n.t)) transport.schedule(onRepeat(note), ticks(n.t));
       }
@@ -345,7 +357,7 @@ export class Engine extends EventTarget {
   // Brings the graph in line with the project (tracks, instruments, mixer settings).
   sync(project) {
     this.project = project;
-    this.transport.bpm.value = project.bpm;
+    if (!this.playing) this.transport.bpm.value = bpmAt(project, this.cursor || 0);
     this.transport.timeSignature = [project.timeSig.num, project.timeSig.den];
     this.buses.delay.delayTime.rampTo((60 / project.bpm) * 0.75, 0.05);
     this.buses.master.volume.rampTo(project.masterVolume ?? 0, 0.05);
@@ -507,8 +519,9 @@ export class Engine extends EventTarget {
     await this.resume();
     await this.prepareAudio();
     this.loopCount = 0;
+    this.transport.bpm.value = bpmAt(this.project, fromBeat);
     this.reschedule(fromBeat);
-    const spb = 60 / this.project.bpm;
+    const spb = 60 / bpmAt(this.project, fromBeat);
     let at = Tone.now() + 0.05;
     if (countIn) {
       const m = meter(this.project.timeSig);
@@ -741,7 +754,7 @@ export class Engine extends EventTarget {
         for (let i = 0; i < data.length; i++, w++) if (w >= 0) out[w] = data[i];
       }
     }
-    const startBeat = this.startedAt.beat + Math.max(0, startTime - latency - this.startedAt.time) / (60 / this.project.bpm);
+    const startBeat = beatAt(this.project, secAt(this.project, this.startedAt.beat) + Math.max(0, startTime - latency - this.startedAt.time));
     return { buffer, startBeat };
   }
 }
@@ -749,9 +762,8 @@ export class Engine extends EventTarget {
 // ------------------------------------------------------------------ offline export
 
 export async function renderProject(project, audioPool, { start = 0, end, tail = 2.5, sampleRate = Tone.getContext().sampleRate, bufferFor = null } = {}) {
-  const spb = 60 / project.bpm;
   const stop = end ?? songEnd(project);
-  const duration = Math.max(0.5, (stop - start) * spb + tail);
+  const duration = Math.max(0.5, secBetween(project, start, stop) + tail);
   const loaded = new Map();
   await Promise.all(project.tracks.filter(t => t.type !== 'audio').map(async t => loaded.set(t.id, await resolveInstrument(t.instrument))));
 
@@ -759,7 +771,7 @@ export async function renderProject(project, audioPool, { start = 0, end, tail =
     // The master dynamics and the amp's noise gate are AudioWorklets; the offline context needs its own copies.
     await loadWorklets();
     transport.PPQ = PPQ;
-    transport.bpm.value = project.bpm;
+    transport.bpm.value = bpmAt(project, start);
     const buses = buildBuses(project.bpm);
     buses.master.volume.value = project.masterVolume ?? 0;
     buses.masterFx.setConfig(project.masterFx);
@@ -779,7 +791,7 @@ export async function renderProject(project, audioPool, { start = 0, end, tail =
     };
     scheduleProject(transport, trimmed, nodes, audioPool, { from: start, bufferFor });
     transport.start(0, ticks(start));
-    if (end != null) transport.stop((end - start) * spb);
+    if (end != null) transport.stop(secBetween(project, start, end));
   }, duration, 2, sampleRate);
   return rendered.get();
 }

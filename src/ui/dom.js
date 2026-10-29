@@ -49,6 +49,29 @@ export function confirmDialog(title, text, ok = 'OK') {
   });
 }
 
+// Asks for a number in a small dialog; resolves to the number, or null if cancelled.
+export function promptNumber(title, label, value, min, max) {
+  return new Promise(resolve => {
+    let close;
+    const input = h('input', { type: 'number', value, min, max, step: 0.1, class: 'num-input', style: { width: '100px' } });
+    const done = ok => {
+      const v = Number(input.value);
+      close();
+      resolve(ok && Number.isFinite(v) ? Math.max(min, Math.min(max, v)) : null);
+    };
+    input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
+    close = modal([
+      h('h2', {}, title),
+      h('label', { class: 'field inline' }, h('span', {}, label), input),
+      h('div', { class: 'actions' },
+        h('button', { class: 'text', onclick: () => done(false) }, 'Cancel'),
+        h('button', { class: 'text accent', onclick: () => done(true) }, 'OK')),
+    ]);
+    input.focus();
+    input.select();
+  });
+}
+
 export function contextMenu(x, y, items) {
   const menu = $('#menu');
   menu.replaceChildren(...items.map(it => it === '-' ? h('hr') : h('button', {
