@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <functional>
 
 namespace bb
 {
@@ -841,6 +842,65 @@ private:
 };
 
 //==============================================================================
+// A plugin the helper has loaded (see Main.cpp), driven straight from the audio thread.
+struct PluginSource
+{
+    virtual ~PluginSource() = default;
+    // Adds n samples of the plugin's output to L/R, given this block's MIDI and the song position.
+    virtual void process (float* L, float* R, int n, const MidiBuffer& midi, double bpm, double ppq, bool playing) = 0;
+};
+
+using PluginResolver = std::function<std::shared_ptr<PluginSource> (int instance)>;
+
+// Where the song is, for plugins that follow the host's tempo.
+struct SongPosition { double bpm = 120, beat = 0; bool playing = false; };
+
+class PluginTrackInstrument final : public ChainedInstrument
+{
+public:
+    PluginTrackInstrument (std::shared_ptr<PluginSource> s, const SongPosition& p) : source (std::move (s)), position (p) {}
+
+    void noteOn (const NoteEvent& e) override
+    {
+        events.push_back ({ now + e.offset, MidiMessage::noteOn (1, e.midi, (uint8) jlimit (1, 127, (int) std::lround (e.velocity * 127))) });
+        if (e.durationSamples >= 0) events.push_back ({ now + e.offset + e.durationSamples, MidiMessage::noteOff (1, e.midi) });
+        held.insert (e.midi);
+    }
+
+    void noteOff (int midi, int offset) override { events.push_back ({ now + offset, MidiMessage::noteOff (1, midi) }); }
+
+    void allNotesOff (int offset) override
+    {
+        for (int m : held) events.push_back ({ now + offset, MidiMessage::noteOff (1, m) });
+        events.push_back ({ now + offset, MidiMessage::controllerEvent (1, 64, 0) });
+        events.push_back ({ now + offset, MidiMessage::allNotesOff (1) });
+        held.clear();
+    }
+
+protected:
+    void renderSource (float* L, float* R, int n) override
+    {
+        midi.clear();
+        std::stable_sort (events.begin(), events.end(), [] (auto& a, auto& b) { return a.at < b.at; });
+        size_t k = 0;
+        for (; k < events.size() && events[k].at < now + n; ++k)
+            midi.addEvent (events[k].message, (int) std::max<int64> (0, events[k].at - now));
+        events.erase (events.begin(), events.begin() + (long) k);
+        if (source) source->process (L, R, n, midi, position.bpm, position.beat, position.playing);
+        now += n;
+    }
+
+private:
+    struct Event { int64 at; MidiMessage message; };
+    std::shared_ptr<PluginSource> source;
+    const SongPosition& position;
+    std::vector<Event> events;
+    std::set<int> held;
+    MidiBuffer midi;
+    int64 now = 0;
+};
+
+//==============================================================================
 // A track: its notes, instrument and mixer chain.
 struct SongNote { double beat, lengthBeats; int midi; float velocity; };
 
@@ -932,6 +992,9 @@ class SongEngine
 {
 public:
     explicit SongEngine (SamplePool& p) : pool (p) {}
+
+    // How plugin tracks find the plugin instances the helper has loaded.
+    PluginResolver plugins;
 
     void prepare (double sampleRate, int maxBlock)
     {
@@ -1055,6 +1118,7 @@ public:
         bus.clear (0, n);
 
         applyLiveNotes();
+        songPosition = { tempo.bpmAt (position), position, playing && waitSamples == 0 };
         if (playing) schedule (n);
         sends.setTempo (tempo.bpmAt (position));
         for (auto& t : tracks)
@@ -1120,6 +1184,7 @@ private:
     std::atomic<double> beatNow { 0 };
     std::atomic<bool> playingNow { false };
     std::atomic<float> masterPeak { 0 };
+    SongPosition songPosition;
 
     struct LiveNote { String track; int midi; float velocity; bool on; };
     std::vector<LiveNote> live;
@@ -1258,6 +1323,12 @@ private:
                         for (auto& id : *layers)
                             if (auto s = pool.get (id.toString())) pieces[p.name.toString().getIntValue()].push_back (s);
             return withChain (std::make_unique<KitInstrument> (std::move (pieces)), d);
+        }
+        if (kind == "plugin")
+        {
+            auto source = plugins ? plugins ((int) d["inst"]) : nullptr;
+            if (source == nullptr) return nullptr;
+            return withChain (std::make_unique<PluginTrackInstrument> (source, songPosition), d);
         }
         if (kind == "multisampler")
             return withChain (std::make_unique<MultiSamplerInstrument> (d, pool), d);

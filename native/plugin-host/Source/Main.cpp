@@ -200,6 +200,48 @@ void EditorWindow::closeButtonPressed()
     sendJson (object ({ { "event", "editorClosed" }, { "inst", (int) owner.id } }));
 }
 
+// Lets the song engine play a loaded plugin directly on the audio thread.
+struct PluginLink final : public bb::PluginSource
+{
+    PluginLink (std::shared_ptr<Instance> i, bool offlineRender) : inst (std::move (i)), offline (offlineRender) {}
+
+    void process (float* L, float* R, int n, const MidiBuffer& midi, double bpm, double ppq, bool playing) override
+    {
+        // Live, never wait on the audio thread (skip a block instead); offline renders wait their turn.
+        std::unique_lock<std::mutex> l (inst->lock, std::defer_lock);
+        if (offline) l.lock();
+        else if (! l.try_lock()) return;
+        if (inst->plugin == nullptr) return;
+        auto& plugin = *inst->plugin;
+        const int channels = jmax (2, plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels());
+        const int outs = plugin.getTotalNumOutputChannels();
+        inst->head.bpm = bpm;
+        inst->head.ppq = ppq;
+        inst->head.playing = playing;
+        int done = 0;
+        while (done < n)
+        {
+            const int len = jmin (n - done, inst->maxBlock);
+            inst->buffer.setSize (channels, len, false, false, true);
+            inst->buffer.clear();
+            inst->midi.clear();
+            inst->midi.addEvents (midi, done, len, -done);
+            plugin.processBlock (inst->buffer, inst->midi);
+            for (int c = 0; c < 2; ++c)
+            {
+                const int src = outs == 0 ? -1 : jmin (c, outs - 1);
+                if (src >= 0) FloatVectorOperations::add (c == 0 ? L + done : R + done, inst->buffer.getReadPointer (src), len);
+            }
+            inst->head.samples += len;
+            inst->head.ppq += len / inst->head.rate * bpm / 60.0;
+            done += len;
+        }
+    }
+
+    std::shared_ptr<Instance> inst;
+    bool offline;
+};
+
 //==============================================================================
 
 class Host final : private Thread
@@ -231,6 +273,10 @@ private:
         {
             live = std::make_unique<bb::LiveAudio> ([] (const var& v) { sendJson (v); },
                                                     [] (const void* d, size_t n) { sendFrame ('I', d, n); });
+            live->song.plugins = [this] (int id) -> std::shared_ptr<bb::PluginSource> {
+                auto inst = find ((uint32_t) id);
+                return inst ? std::make_shared<PluginLink> (inst, false) : nullptr;
+            };
             liveRaw = live.get();
         }
         return *live;
@@ -545,6 +591,10 @@ private:
                 {
                     // An offline render in a separate engine, sharing the uploaded samples.
                     bb::SongEngine offline (l.samples);
+                    offline.plugins = [this] (int id) -> std::shared_ptr<bb::PluginSource> {
+                        auto inst = find ((uint32_t) id);
+                        return inst ? std::make_shared<PluginLink> (inst, true) : nullptr;
+                    };
                     offline.prepare ((double) msg.getProperty ("rate", 48000.0), 512);
                     offline.setSong (msg["song"]);
                     auto out = offline.render ((double) msg["start"], (double) msg["end"], (double) msg.getProperty ("tail", 2.5));

@@ -280,6 +280,36 @@ module.exports = async function native(win, app) {
     }
     return worst <= 1.5 ? 'ok loudness per 50 ms: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('native song engine plays plugins in-process (Dexed)', `
+    store.dirty = false;
+    await app.newSong();
+    await app.rescanPlugins();
+    const { pluginList } = await import('./engine/plugins.js');
+    const dexed = pluginList().find(d => /dexed/i.test(d.name));
+    if (!dexed) return 'ok skipped (Dexed not bundled here)';
+    const t = app.addTrack('instrument', dexed.id, 'FM');
+    store.update(() => { t.regions.push({ id: 'p', start: 0, length: 4, loopLength: 4, notes: [0, 1, 2, 3].map(b => ({ t: b, d: 0.5, n: 60 + b * 3, v: 0.9 })) }); t.reverb = 0; t.echo = 0; });
+    await app.engine.whenLoaded();
+    const inst = app.engine.nodes.get(t.id).instrument;
+    if (!inst?.selfScheduled) return 'Dexed not loaded';
+    const { renderProject } = await import('./engine/engine.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const rate = Tone.getContext().sampleRate;
+    // The app's path: a fresh copy of the plugin rendered offline, mixed in.
+    const pluginAudio = await app.engine.renderPlugins(store.project, { start: 0, end: 4, sampleRate: rate });
+    const web = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 4, tail: 1, sampleRate: rate, pluginAudio });
+    // Native: the loaded instance, driven by the song engine.
+    inst.setStreaming(false);
+    await new Promise(r => setTimeout(r, 200));
+    const song = songForNative(store.project, new Map([[t.id, { id: t.instrument, plugin: inst }]]));
+    const nat = await renderNative(song, { start: 0, end: 4, tail: 1, sampleRate: rate });
+    inst.setStreaming(true);
+    const env = b => { const out = []; const l = b.getChannelData(0); for (let w = 0; w + 2400 <= Math.min(web.length, nat.length); w += 2400) { let e = 0; for (let i = w; i < w + 2400; i++) e += l[i] * l[i]; out.push(10 * Math.log10(e / 2400 + 1e-18)); } return out; };
+    const a = env(web), b = env(nat);
+    const max = Math.max(...a.map((v, i) => (Math.max(v, b[i]) > -50 ? Math.abs(v - b[i]) : 0)));
+    const peak = Math.max(...b);
+    return max <= 1.5 && peak > -40 ? 'ok Dexed through the native song engine matches within ' + max.toFixed(1) + ' dB (peak ' + peak.toFixed(1) + ' dB)' : 'difference ' + max.toFixed(1) + ' dB, native peak ' + peak.toFixed(1);`);
+
   for (const r of results) console.log(r);
   app.quit();
 };

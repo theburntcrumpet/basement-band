@@ -283,8 +283,15 @@ export class PluginInstrument {
     this.node.port.onmessage = e => { this.underruns += e.data.late ? 1 : 0; this.pump(e.data.now); };
   }
 
+  // Stops (or resumes) rendering through the helper's render-ahead stream, for when the native
+  // engine plays this plugin itself.
+  setStreaming(on) {
+    this.streaming = on;
+    if (!on) this.renderedTo = null;
+  }
+
   pump(now) {
-    if (this.disposed) return;
+    if (this.disposed || this.streaming === false) return;
     if (this.renderedTo == null || this.renderedTo < now) {
       if (this.renderedTo != null) this.underruns++;
       this.renderedTo = now + CHUNK;

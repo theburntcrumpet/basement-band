@@ -50,8 +50,10 @@ const partsFor = id => {
   return partsCache.get(id);
 };
 
-export function nativeInstrument(id, buffers) {
+// plugin: the track's loaded PluginInstrument, for plugin instruments.
+export function nativeInstrument(id, buffers, plugin = null) {
   const def = getInstrument(id);
+  if (def.type === 'plugin') return plugin && !def.missing ? { kind: 'plugin', inst: plugin.inst, effects: [], volume: def.volume || 0 } : null;
   const parts = partsFor(id);
   if (!parts) return null;
   if (def.type === 'sampler') {
@@ -91,7 +93,7 @@ export function songForNative(project, instruments, { metronome = false } = {}) 
         volume: t.volume ?? -4, pan: t.pan ?? 0, tone: t.tone ?? 1, drive: t.drive || 0,
         reverb: t.reverb || 0, echo: t.echo || 0, eqLow: t.eqLow || 0, eqMid: t.eqMid || 0, eqHigh: t.eqHigh || 0,
         mute: isMuted(project, t),
-        instrument: loaded ? nativeInstrument(loaded.id, loaded.buffers) : null,
+        instrument: loaded ? nativeInstrument(loaded.id, loaded.buffers, loaded.plugin) : null,
         notes: t.regions.flatMap(r => expandRegion(r)).map(n => [n.t, n.d, n.n, n.v]),
       };
     }),
