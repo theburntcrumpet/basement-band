@@ -18,7 +18,9 @@
     "test:instruments": "env -u WAYLAND_DISPLAY BB_SMOKE=test/instruments.cjs BB_TEST_ROOTS=assets/samples xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox",
     "fetch-plugins": "node scripts/fetch-plugins.mjs",
     "build:plugin-host": "cmake -S native/plugin-host -B native/plugin-host/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/plugin-host/build --config Release",
-    "check:plugin-host": "node scripts/check-plugin-host.mjs"
+    "check:plugin-host": "node scripts/check-plugin-host.mjs",
+    "test:native": "env -u WAYLAND_DISPLAY BB_SMOKE=test/native.cjs BB_TEST_AUDIO=1 BB_PLUGIN_HOST=native/plugin-host/build/bb-plugin-host_artefacts/Release/bb-plugin-host BB_TEST_ROOTS=/tmp/basement-band-test-ir xvfb-run -a -s \"-screen 0 1440x900x24\" electron . --ozone-platform=x11 --no-sandbox",
+    "check:live-audio": "node scripts/check-live-audio.mjs"
   },
   "build": {
     "appId": "io.github.basementband",

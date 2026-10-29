@@ -28,6 +28,8 @@ target_sources(bb-plugin-host PRIVATE Source/Main.cpp)
 target_compile_definitions(bb-plugin-host PRIVATE
   JUCE_PLUGINHOST_VST3=1
   JUCE_PLUGINHOST_LV2=$<BOOL:${UNIX}>
+  JUCE_JACK=$<BOOL:${UNIX}>
+  JUCE_ALSA=$<BOOL:${UNIX}>
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
   JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:bb-plugin-host,JUCE_PRODUCT_NAME>"
@@ -35,5 +37,8 @@ target_compile_definitions(bb-plugin-host PRIVATE
 
 target_link_libraries(bb-plugin-host PRIVATE
   juce::juce_audio_processors
+  juce::juce_audio_devices
+  juce::juce_audio_formats
+  juce::juce_dsp
   juce::juce_recommended_config_flags
   juce::juce_recommended_warning_flags)

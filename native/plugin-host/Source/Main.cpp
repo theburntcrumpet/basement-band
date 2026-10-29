@@ -9,12 +9,17 @@
 //   'R'  render request:  u32 seq, u32 inst, u32 frames, f64 bpm, f64 ppq, u8 playing, 3 pad,
 //                         u32 count, then count × {u32 offset, u8 status, u8 data1, u8 data2, u8 pad}
 //   'A'  rendered audio:  u32 seq, u32 inst, u32 frames, u32 channels, then planar float32
+//   'I'  recorded input:  i64 first frame, f64 clock time, f64 frame at that time, then float32 mono
+//
+// Live audio (see LiveAudio.h): audio:devices, audio:open, audio:close, audio:status, audio:clock,
+// monitor:set, record:start, record:stop, monitor:render, test:stats.
 //
 // Rendering happens on the stdin thread, in order, so the app can stream ahead of playback.
 // Loading, editor windows and state run on the message thread, as plugins expect.
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "LiveAudio.h"
 
 #include <atomic>
 #include <cstdio>
@@ -205,13 +210,27 @@ public:
     ~Host() override
     {
         stopThread (200);
+        live.reset();
         std::lock_guard<std::mutex> l (mapLock);
         instances.clear();
     }
 
 private:
     AudioPluginFormatManager formats;
+    std::unique_ptr<bb::LiveAudio> live;      // created on the message thread when first used
+    std::atomic<bb::LiveAudio*> liveRaw { nullptr };
     std::mutex mapLock;
+
+    bb::LiveAudio& liveAudio()
+    {
+        if (live == nullptr)
+        {
+            live = std::make_unique<bb::LiveAudio> ([] (const var& v) { sendJson (v); },
+                                                    [] (const void* d, size_t n) { sendFrame ('I', d, n); });
+            liveRaw = live.get();
+        }
+        return *live;
+    }
     std::map<uint32_t, std::shared_ptr<Instance>> instances;
 
     std::shared_ptr<Instance> find (uint32_t id)
@@ -282,7 +301,7 @@ private:
         uint32_t done = 0, e = 0;
         while (done < frames)
         {
-            const int n = (int) jmin<uint32_t> (frames - done, (uint32_t) inst.maxBlock);
+            const int n = (int) std::min<uint32_t> (frames - done, (uint32_t) inst.maxBlock);
             inst.buffer.setSize (channels, n, false, false, true);
             inst.buffer.clear();
             inst.midi.clear();
@@ -294,7 +313,7 @@ private:
                     break;
                 const auto* b = reinterpret_cast<const uint8_t*> (events + e * 8 + 4);
                 const int size = (b[0] & 0xf0) == 0xc0 || (b[0] & 0xf0) == 0xd0 ? 2 : 3;
-                inst.midi.addEvent (b, size, (int) jmax<int64> (0, (int64) offset - done));
+                inst.midi.addEvent (b, size, (int) std::max<int64> (0, (int64) offset - done));
             }
             inst.head.ppq = ppq + (double) done / inst.head.rate * bpm / 60.0;
             plugin.processBlock (inst.buffer, inst.midi);
@@ -477,6 +496,46 @@ private:
                 inst->head.samples = 0;
             }
             reply (req, true);
+        }
+        else if (cmd.startsWith ("audio:") || cmd.startsWith ("monitor:") || cmd.startsWith ("record:") || cmd == "test:stats")
+        {
+            // The clock is answered straight away (its timing is the point); the rest on the message thread.
+            if (cmd == "audio:clock")
+            {
+                if (auto* l = liveRaw.load())
+                    return reply (req, true, {}, l->clock());
+                return reply (req, false, "Audio isn't open");
+            }
+            MessageManager::callAsync ([this, cmd, msg, req]
+            {
+                auto& l = liveAudio();
+                if (cmd == "audio:devices") return reply (req, true, {}, l.listDevices());
+                if (cmd == "audio:status") return reply (req, true, {}, l.status());
+                if (cmd == "audio:open")
+                {
+                    const auto error = l.open (msg);
+                    return error.isEmpty() ? reply (req, true, {}, l.status()) : reply (req, false, error);
+                }
+                if (cmd == "audio:close") { l.close(); return reply (req, true); }
+                if (cmd == "monitor:set") { l.setMonitor (msg); return reply (req, true); }
+                if (cmd == "record:start") { l.startRecording(); return reply (req, true); }
+                if (cmd == "record:stop") { l.stopRecording(); return reply (req, true); }
+                if (cmd == "test:stats") return reply (req, true, {}, object ({ { "latencies", l.testStats() } }));
+                if (cmd == "monitor:render")
+                {
+                    // {track, bpm, masterVolume, rate, input: base64 float32 mono} -> base64 float32 L then R
+                    MemoryOutputStream decoded;
+                    Base64::convertFromBase64 (decoded, msg["input"].toString());
+                    const MemoryBlock in = decoded.getMemoryBlock();
+                    AudioBuffer<float> buf (1, (int) (in.getSize() / 4));
+                    memcpy (buf.getWritePointer (0), in.getData(), in.getSize());
+                    auto out = bb::LiveAudio::renderOffline (msg, buf, (double) msg.getProperty ("rate", 48000.0), l);
+                    MemoryBlock result;
+                    for (int c = 0; c < 2; ++c) result.append (out.getReadPointer (c), sizeof (float) * (size_t) out.getNumSamples());
+                    return reply (req, true, {}, object ({ { "output", Base64::toBase64 (result.getData(), result.getSize()) } }));
+                }
+                reply (req, false, "Unknown command " + cmd);
+            });
         }
         else if (cmd == "ping")
         {
