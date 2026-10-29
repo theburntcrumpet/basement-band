@@ -10,7 +10,7 @@ const SRC = path.join(ROOT, 'src');
 const ASSETS = app.isPackaged ? path.join(process.resourcesPath, 'assets') : path.join(ROOT, 'assets');
 const TONE = path.join(ROOT, 'node_modules', 'tone', 'build', 'Tone.js');
 const LAME = path.join(ROOT, 'node_modules', '@breezystack', 'lamejs', 'dist', 'lamejs.js');
-const EXPORT_TYPES = { wav: 'WAV Audio', mp3: 'MP3 Audio', flac: 'FLAC Audio' };
+const EXPORT_TYPES = { wav: 'WAV Audio', mp3: 'MP3 Audio', flac: 'FLAC Audio', mid: 'MIDI File' };
 const AUDIO_EXT = new Set(['.wav', '.mp3', '.ogg', '.flac', '.m4a', '.aac', '.aif', '.aiff', '.webm', '.opus']);
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 const INSTRUMENT_EXT = new Set(['.sf2', '.sfz']);
@@ -146,12 +146,18 @@ function registerIpc(win) {
 
   ipcMain.handle('project:open', async () => {
     const r = await dialog.showOpenDialog(win, {
-      title: 'Open Song',
-      filters: [{ name: 'Basement Band Song', extensions: ['bband'] }],
+      title: 'Open Song or MIDI File',
+      filters: [{ name: 'Songs and MIDI files', extensions: ['bband', 'mid', 'midi'] }],
       properties: ['openFile'],
     });
     if (r.canceled || !r.filePaths[0]) return null;
-    return { filePath: r.filePaths[0], data: await fs.readFile(r.filePaths[0], 'utf8') };
+    const filePath = r.filePaths[0];
+    // MIDI files are imported into the current song rather than opened as one.
+    if (/\.midi?$/i.test(filePath)) {
+      const buf = await fs.readFile(filePath);
+      return { filePath, midi: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    }
+    return { filePath, data: await fs.readFile(filePath, 'utf8') };
   });
 
   ipcMain.handle('export:save', async (_e, { bytes, name, ext = 'wav' }) => {

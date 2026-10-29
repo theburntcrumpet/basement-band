@@ -10,6 +10,7 @@ export const EXPORT_FORMATS = [
   { id: 'flac', label: 'FLAC · lossless, about half the size of WAV', ext: 'flac' },
   { id: 'wav16', label: 'WAV · 16-bit (CD quality)', ext: 'wav', bits: 16 },
   { id: 'wav24', label: 'WAV · 24-bit (for mastering)', ext: 'wav', bits: 24 },
+  { id: 'midi', label: 'MIDI · notes only, for other music apps (.mid)', ext: 'mid' },
 ];
 
 // MP3 frames are 1152 samples; LAME supports these MPEG-1 rates.

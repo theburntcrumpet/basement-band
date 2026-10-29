@@ -1,12 +1,13 @@
 // App controller: wires the store, audio engine and UI together.
 
 import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate, trackForPart, uid, barBeats, changeTimeSig } from './state.js';
-import { Engine, renderProject, songEnd } from './engine/engine.js';
+import { Engine, renderProject, songEnd, expandRegion } from './engine/engine.js';
 import { getInstrument, isKit, loadBuffer } from './engine/instruments.js';
 import { setLibrary, inspect, registerDefs, exportDefs, INSTRUMENT_FILE } from './engine/user-instruments.js';
 import { encodeWav, toBase64, fromBase64 } from './engine/wav.js';
 import { renderFx } from './engine/fxgen.js';
 import { EXPORT_FORMATS, MP3_RATES, encodeAudio } from './engine/export.js';
+import { parseMidi, writeMidi, gmToInstrument, instrumentToGm } from './music/midifile.js';
 import { defaultAmp } from './engine/amp.js';
 import { STYLES, partInstrument } from './music/band.js';
 import { KEY_NAMES } from './music/theory.js';
@@ -713,7 +714,8 @@ class App {
 
   async handleDrop(e, track, beat) {
     const all = [...e.dataTransfer.files];
-    const files = all.filter(f => !INSTRUMENT_FILE.test(f.name));
+    for (const f of all.filter(f => /\.midi?$/i.test(f.name))) this.importMidi(await f.arrayBuffer(), f.name);
+    const files = all.filter(f => !INSTRUMENT_FILE.test(f.name) && !/\.midi?$/i.test(f.name));
     if (all.length > files.length) await this.importDroppedInstruments(all);
     if (files.length) {
       for (const f of files) await this.importAudio(await f.arrayBuffer(), f.name.replace(/\.[^.]+$/, ''), track, beat);
@@ -804,7 +806,9 @@ class App {
       if (e.defaultPrevented) return;
       e.preventDefault();
       const files = [...(e.dataTransfer?.files || [])];
-      if (files.some(f => INSTRUMENT_FILE.test(f.name))) this.importDroppedInstruments(files);
+      const midi = files.filter(f => /\.midi?$/i.test(f.name));
+      if (midi.length) midi.forEach(async f => this.importMidi(await f.arrayBuffer(), f.name));
+      else if (files.some(f => INSTRUMENT_FILE.test(f.name))) this.importDroppedInstruments(files);
       else if (files.length) toast('Drop audio files onto the timeline, or instruments (.sf2/.sfz) anywhere');
     });
   }
@@ -986,9 +990,10 @@ class App {
 
   async open() {
     if (!window.host) return;
-    if (!(await this.confirmDiscard())) return;
     const res = await window.host.openProject();
     if (!res) return;
+    if (res.midi) return this.importMidi(res.midi, res.filePath.split(/[\\/]/).pop());
+    if (!(await this.confirmDiscard())) return;
     try {
       const file = JSON.parse(res.data);
       if (file.format !== 'basement-band') throw new Error('not a Basement Band song');
@@ -1032,9 +1037,56 @@ class App {
     ]);
   }
 
+  // ------------------------------------------------------------ MIDI files
+
+  // Adds a .mid file's parts as new tracks (at bar 1 in an empty song, otherwise at the playhead's bar).
+  importMidi(bytes, fileName = 'MIDI file') {
+    let file;
+    try { file = parseMidi(bytes); } catch (err) { return toast(`Couldn't read ${fileName}: ${err.message}`, 5000); }
+    if (!file.tracks.length) return toast(`${fileName} has no notes`);
+    const empty = !store.project.tracks.length;
+    store.update(p => {
+      if (empty && file.bpm) p.bpm = Math.max(40, Math.min(240, Math.round(file.bpm)));
+      if (empty && file.timeSig && TIME_SIGNATURES.includes(`${file.timeSig.num}/${file.timeSig.den}`)) p.timeSig = { ...file.timeSig };
+      const bar = barBeats(p);
+      const at = empty ? 0 : Math.floor(store.ui.playhead / bar) * bar;
+      for (const tr of file.tracks) {
+        const track = tr.drums ? newTrack('drums', 'kit-rock', tr.name) : newTrack('instrument', gmToInstrument(tr.program), tr.name);
+        const end = Math.max(...tr.notes.map(n => n.t + n.d));
+        const length = Math.max(bar, Math.ceil(end / bar - 1e-6) * bar);
+        track.regions.push(newMidiRegion(at, length, tr.notes, { name: tr.name }));
+        p.tracks.push(track);
+      }
+    });
+    toast(`Imported ${file.tracks.length} part${file.tracks.length === 1 ? '' : 's'} from ${fileName}`, 4000);
+  }
+
+  // The song's notes (loops written out) as a Standard MIDI File.
+  exportMidi(range) {
+    const p = store.project;
+    const tracks = p.tracks.filter(t => t.type !== 'audio').map(t => {
+      const def = getInstrument(t.instrument);
+      const program = def.source?.kind === 'sf2' && def.source.bank !== 128 ? def.source.program : instrumentToGm(t.instrument);
+      const notes = t.regions.flatMap(r => expandRegion(r))
+        .filter(n => n.t >= range.start - 1e-6 && n.t < range.end - 1e-6)
+        .map(n => ({ ...n, t: n.t - range.start, d: Math.min(n.d, range.end - n.t) }));
+      return { name: t.name, program, drums: t.type === 'drums', notes };
+    }).filter(t => t.notes.length);
+    return writeMidi({ bpm: p.bpm, timeSig: p.timeSig, tracks });
+  }
+
   async runExport(formatId, range) {
     const p = store.project;
     const fmt = EXPORT_FORMATS.find(f => f.id === formatId);
+    if (fmt.ext === 'mid') {
+      const bytes = this.exportMidi(range);
+      const name = `${store.filePath?.split(/[\\/]/).pop().replace(/\.bband$/, '') || p.name || 'My Song'}.mid`;
+      if (window.host) {
+        const path = await window.host.exportAudio(bytes, name, 'mid');
+        if (path) toast('Exported ' + path.split(/[\\/]/).pop());
+      } else download(new Blob([bytes], { type: 'audio/midi' }), name);
+      return bytes;
+    }
     const bar = h('div', { style: { width: '0%', animation: 'none' } });
     const status = h('div', { style: { color: 'var(--dim)' } }, 'Mixing your song…');
     const close = modal([h('h2', {}, 'Exporting…'), status, h('div', { class: 'progress' }, bar)], { dismissable: false });

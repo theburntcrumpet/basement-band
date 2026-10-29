@@ -253,12 +253,12 @@ module.exports = async function flows(win, app) {
     app.exportSong();
     const options = [...document.querySelectorAll('#modal select')[0].options].map(o => o.value);
     document.querySelector('#modal .actions .text').click();
-    if (options.length !== 6) return 'formats ' + options;
+    if (options.length !== 7 || !options.includes('midi')) return 'formats ' + options;
     const { renderProject } = await import('./engine/engine.js');
     const { encodeAudio } = await import('./engine/export.js');
     const buf = await renderProject(store.project, app.engine.audioPool, { start: 0, end: 8, sampleRate: 44100 });
     const sizes = {};
-    for (const id of options) {
+    for (const id of options.filter(o => o !== 'midi')) {
       const bytes = await encodeAudio(buf, id);
       const head = String.fromCharCode(...bytes.slice(0, 4));
       const ok = id.startsWith('mp3') ? (head.startsWith('ID3') || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) : id === 'flac' ? head === 'fLaC' : head === 'RIFF';
@@ -680,6 +680,25 @@ module.exports = async function flows(win, app) {
     // First C is cut when it is re-struck; E rings until the pedal lifts; G ends at Stop, not as a blip.
     const ok = secs(c1) > 0.8 && Math.abs(c1.t + c1.d - c2.t) < 0.05 && secs(e) > 1.1 && secs(g) > 0.2;
     return ok ? 'ok C ' + secs(c1).toFixed(2) + 's (re-struck), E ' + secs(e).toFixed(2) + 's (pedal), G ' + secs(g).toFixed(2) + 's (held at Stop)' : JSON.stringify(notes.map(x => [x.n, x.t.toFixed(2), secs(x).toFixed(2)]));`);
+
+  await check('MIDI import and export round trip', `
+    store.dirty = false;
+    await app.newSong();
+    const { writeMidi, parseMidi } = await import('./music/midifile.js');
+    const { songEnd } = await import('./engine/engine.js');
+    const src = writeMidi({ bpm: 87, timeSig: { num: 3, den: 4 }, tracks: [
+      { name: 'Strings', program: 48, notes: [{ t: 0, d: 3, n: 55, v: 0.6 }, { t: 3, d: 3, n: 57, v: 0.6 }] },
+      { name: 'Bass', program: 33, notes: [{ t: 0, d: 1, n: 43, v: 0.9 }, { t: 3, d: 1, n: 45, v: 0.9 }] },
+      { name: 'Kit', drums: true, notes: [{ t: 0, d: 0.25, n: 36, v: 1 }, { t: 1, d: 0.25, n: 42, v: 0.7 }] },
+    ] });
+    app.importMidi(src.buffer, 'test.mid');
+    const p = store.project;
+    if (p.bpm !== 87 || p.timeSig.num !== 3) return 'tempo/meter ' + p.bpm + ' ' + JSON.stringify(p.timeSig);
+    const kinds = p.tracks.map(t => t.name + ':' + t.type + ':' + t.instrument).join(', ');
+    if (!kinds.includes('Strings:instrument:strings') || !kinds.includes('Bass:instrument:electric-bass') || !kinds.includes('Kit:drums:kit-rock')) return 'tracks ' + kinds;
+    const out = parseMidi(app.exportMidi({ start: 0, end: songEnd(p) }).buffer);
+    const notes = out.tracks.flatMap(t => t.notes.map(n => n.n + '@' + n.t)).sort().join(' ');
+    return out.bpm === 87 && notes === '36@0 42@1 43@0 45@3 55@0 57@3' && out.tracks.find(t => t.drums) ? 'ok ' + kinds : 'export ' + out.bpm + ' ' + notes;`);
 
   await check('piano roll follows the selected track and region', `
     store.dirty = false;

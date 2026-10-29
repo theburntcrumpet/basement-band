@@ -47,7 +47,10 @@ open it and start making music.
   pan, reverb, echo, tone or EQ, drag them, right-click to remove. Plays back (and exports) exactly.
 - **Effects**: Vinyl (crackle, pops, age, wow), Tape, Radio and Lo-Fi, on any track or on the whole
   mix (Master FX). Crackle and hiss only play while the song does.
-- **Export**: the whole song or the cycle range as MP3 (128/192/320 kbps), FLAC, or 16/24-bit WAV.
+- **Export**: the whole song or the cycle range as MP3 (128/192/320 kbps), FLAC, or 16/24-bit WAV,
+  or the notes as a MIDI file for other music apps.
+- **MIDI files**: Open (or drop) a `.mid` to add its parts as tracks; General MIDI instruments map
+  to built-in sounds, channel 10 becomes a drum track, and sustain-pedal data is kept.
 
 ## Run it
 
@@ -117,7 +120,7 @@ Builds are unsigned, so Windows SmartScreen will warn on first launch.
   to a stand-in synth until it is re-imported.
 - **SoundFont/SFZ:** no `.sf3` (compressed) files; the sustain pedal works, but other MIDI controllers (mod
   wheel, pitch bend) don't change sounds yet; large libraries load fully into memory.
-- **MIDI files:** can't import or export `.mid` yet.
+- **MIDI files** use one tempo (the file's first) and don't carry controller data beyond sustain.
 - **The Freesound recordings are high-quality previews** (128 kbps MP3), not the original WAVs.
 - **macOS isn't built or tested** (Electron supports it; it needs a Mac runner and signing).
 - **Windows builds are tested only under Wine** in development, not on real Windows hardware.
@@ -129,7 +132,7 @@ Roughly in priority order:
 1. ~~Automation lanes~~ (done for mixer settings; effect and amp knobs next).
 2. ~~Sustain pedal~~ (done: MIDI CC64 and Tab in Musical Typing). Still to do: mod wheel, pitch
    bend and other MIDI CCs driving SoundFont/SFZ and synth sounds.
-3. **MIDI file import/export.**
+3. ~~MIDI file import/export~~ (done).
 4. **Tempo-following audio** (time-stretching loops and recordings).
 5. **Tempo and time-signature changes** within a song.
 6. **Song files with audio stored alongside** (or compressed) instead of embedded WAV.
