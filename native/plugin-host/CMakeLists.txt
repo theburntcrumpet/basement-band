@@ -32,7 +32,6 @@ target_compile_definitions(bb-plugin-host PRIVATE
   JUCE_PLUGINHOST_LV2=$<AND:$<BOOL:${UNIX}>,$<NOT:$<BOOL:${APPLE}>>>
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
-  JUCE_DISPLAY_SPLASH_SCREEN=0
   JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:bb-plugin-host,JUCE_PRODUCT_NAME>"
   JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:bb-plugin-host,JUCE_VERSION>")
 
@@ -40,3 +39,8 @@ target_link_libraries(bb-plugin-host PRIVATE
   juce::juce_audio_processors
   juce::juce_recommended_config_flags
   juce::juce_recommended_warning_flags)
+
+# Audio Unit hosting shows generic AU editors (AUGenericView) from CoreAudioKit.
+if(APPLE)
+  target_link_libraries(bb-plugin-host PRIVATE "-framework CoreAudioKit")
+endif()

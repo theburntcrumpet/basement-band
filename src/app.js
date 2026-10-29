@@ -71,6 +71,7 @@ class App {
   // ------------------------------------------------------------ plugins
 
   wirePlugins() {
+    bridge.start();
     bridge.addEventListener('progress', e => {
       this.pluginScanText = `Checking plugins… ${e.detail.done + 1} of ${e.detail.total} (${e.detail.file})`;
       if (this.library.tab === 'sounds') this.library.render();

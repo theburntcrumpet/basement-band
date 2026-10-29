@@ -50,7 +50,8 @@ async function main() {
   await fs.writeFile(zip, bytes);
   // unzip on Linux; bsdtar (built into Windows 10+ and macOS) reads zips elsewhere.
   if (process.platform === 'linux') execFileSync('unzip', ['-q', zip, 'Dexed.vst3/*', 'LICENSE', '-d', tmp]);
-  else execFileSync('tar', ['-xf', zip, '-C', tmp]);
+  // On Windows use the system's bsdtar explicitly: Git Bash's GNU tar can't read zips and takes "D:" for a host.
+  else execFileSync(process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar', ['-xf', build.file], { cwd: tmp });
   await fs.rename(path.join(tmp, 'Dexed.vst3'), path.join(OUT, 'Dexed.vst3'));
   await fs.rename(path.join(tmp, 'LICENSE'), path.join(OUT, 'Dexed-LICENSE.txt'));
   await fs.rm(tmp, { recursive: true, force: true });

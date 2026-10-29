@@ -392,7 +392,7 @@ private:
                 }
                 if (inst->window == nullptr)
                 {
-                    auto* editor = inst->plugin->hasEditor() ? inst->plugin->createEditorIfNeeded() : nullptr;
+                    auto* editor = inst->plugin->hasEditor() ? inst->plugin->createEditorAndMakeActive() : nullptr;
                     if (editor == nullptr)
                         editor = new GenericAudioProcessorEditor (*inst->plugin);
                     inst->window = std::make_unique<EditorWindow> (*inst, title, editor);
