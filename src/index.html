@@ -10,15 +10,15 @@
 <body>
   <header id="toolbar">
     <div class="group">
-      <button id="btn-library" class="tool on" title="Library (Y)">▤</button>
-      <button id="btn-smart" class="tool" title="Smart Controls (B)">◎</button>
-      <button id="btn-editor" class="tool" title="Editor (E)">✎</button>
+      <button id="btn-library" class="tool on" title="Library (Y)" data-icon="library"></button>
+      <button id="btn-smart" class="tool" title="Smart Controls (B)" data-icon="knob"></button>
+      <button id="btn-editor" class="tool" title="Editor (E)" data-icon="pencil"></button>
     </div>
     <div class="group transport">
-      <button id="btn-rewind" class="tool" title="Go to beginning (Enter)">⏮</button>
-      <button id="btn-play" class="tool play" title="Play / Stop (Space)">▶</button>
-      <button id="btn-record" class="tool record" title="Record (R)">●</button>
-      <button id="btn-cycle" class="tool" title="Cycle (C)">⟲</button>
+      <button id="btn-rewind" class="tool" title="Go to beginning (Enter)" data-icon="rewind"></button>
+      <button id="btn-play" class="tool play" title="Play / Stop (Space)" data-icon="play"></button>
+      <button id="btn-record" class="tool record" title="Record (R)" data-icon="record"></button>
+      <button id="btn-cycle" class="tool" title="Cycle (C)" data-icon="cycle"></button>
     </div>
     <div id="lcd">
       <div class="lcd-cell"><span id="lcd-pos" class="big">1.1</span><label>bar.beat</label></div>
@@ -31,8 +31,9 @@
     </div>
     <div class="group">
       <button id="btn-countin" class="tool" title="Count-in before recording">1234</button>
-      <button id="btn-metronome" class="tool" title="Metronome (K)">♩</button>
-      <button id="btn-typing" class="tool" title="Musical Typing (Ctrl+K)">⌨</button>
+      <button id="btn-metronome" class="tool" title="Metronome (K)" data-icon="metronome"></button>
+      <button id="btn-tuner" class="tool" title="Tuner (T)" data-icon="tuner"></button>
+      <button id="btn-typing" class="tool" title="Musical Typing (Ctrl+K)" data-icon="keyboard"></button>
     </div>
     <div class="group master">
       <input id="master-vol" type="range" min="-30" max="6" step="0.5" value="0" title="Master volume">
@@ -44,7 +45,7 @@
       <button id="btn-open" class="text" title="Open (Ctrl+O)">Open</button>
       <button id="btn-save" class="text" title="Save (Ctrl+S)">Save</button>
       <button id="btn-export" class="text accent" title="Export to MP3, FLAC or WAV (Ctrl+E)">Export</button>
-      <button id="btn-settings" class="tool" title="Settings (Ctrl+,)">⚙</button>
+      <button id="btn-settings" class="tool" title="Settings (Ctrl+,)" data-icon="gear"></button>
     </div>
   </header>
 
@@ -64,11 +65,11 @@
         <div id="arrange-scroll">
           <div id="arrange-inner">
             <div id="ruler-row">
-              <div id="ruler-corner"><button id="btn-add-track" title="New track (Ctrl+Alt+N)">＋</button></div>
+              <div id="ruler-corner"><button id="btn-add-track" title="New track (Ctrl+Alt+N)" data-icon="plus"></button></div>
               <div id="ruler"></div>
             </div>
             <div id="arr-row">
-              <div id="arr-corner"><span>Arrangement</span><button id="btn-add-section" title="Add a section (Intro, Verse, Chorus…) at the playhead">＋</button></div>
+              <div id="arr-corner"><span>Arrangement</span><button id="btn-add-section" title="Add a section (Intro, Verse, Chorus…) at the playhead" data-icon="plus"></button></div>
               <div id="arr-lane"></div>
             </div>
             <div id="tracks"></div>
@@ -91,7 +92,7 @@
         <div id="bottom-bar">
           <div id="bottom-title"></div>
           <div id="bottom-tools"></div>
-          <button id="bottom-close" class="tool small" title="Close">✕</button>
+          <button id="bottom-close" class="tool small" title="Close" data-icon="close"></button>
         </div>
         <div id="bottom-body"></div>
       </div>
@@ -99,6 +100,7 @@
   </main>
 
   <div id="typing" class="hidden"></div>
+  <div id="tuner" class="hidden"></div>
   <div id="toast"></div>
   <div id="modal" class="hidden"></div>
   <div id="menu" class="hidden"></div>

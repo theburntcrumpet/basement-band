@@ -4,6 +4,7 @@
 // Pencil (draw notes; paints hits on drums), Eraser (click or sweep to delete), Box (marquee select).
 // Selection is a set of note objects, so it survives notes being added, removed or reordered.
 
+import { icon } from './icons.js';
 import { h, drag, canvas2d, toast, palette } from './dom.js';
 import { store } from '../state.js';
 import { kitPieces } from '../engine/instruments.js';
@@ -19,10 +20,10 @@ const DRUM_ORDER = [75, 63, 70, 56, 55, 53, 51, 49, 46, 44, 42, 48, 45, 41, 39, 
 const RULER_H = 18;
 
 export const TOOLS = [
-  { id: 'pointer', icon: '↖', label: 'Pointer', key: '1', tip: 'Select, move and resize notes. Drag on empty space to select several; double-click to add a note.' },
-  { id: 'pencil', icon: '✎', label: 'Pencil', key: '2', tip: 'Click to add notes and drag to set their length.' },
-  { id: 'eraser', icon: '⌫', label: 'Eraser', key: '3', tip: 'Click or sweep across notes to delete them.' },
-  { id: 'box', icon: '⬚', label: 'Box select', key: '4', tip: 'Drag a box to select notes (Shift adds to the selection).' },
+  { id: 'pointer', icon: 'pointer', label: 'Pointer', key: '1', tip: 'Select, move and resize notes. Drag on empty space to select several; double-click to add a note.' },
+  { id: 'pencil', icon: 'pencil', label: 'Pencil', key: '2', tip: 'Click to add notes and drag to set their length.' },
+  { id: 'eraser', icon: 'eraser', label: 'Eraser', key: '3', tip: 'Click or sweep across notes to delete them.' },
+  { id: 'box', icon: 'box', label: 'Box select', key: '4', tip: 'Drag a box to select notes (Shift adds to the selection).' },
 ];
 
 export class Editor {
@@ -141,7 +142,7 @@ export class Editor {
       class: 'tool small' + (this.tool === t.id ? ' on' : ''),
       title: `${t.label} (${t.key}) — ${t.tip}`,
       onclick: () => this.setTool(t.id),
-    }, t.icon)));
+    }, icon(t.icon))));
     const snapSel = h('select', { onchange: e => { this.snap = Number(e.target.value); this.drawGrid(region); } },
       [['1/4', 1], ['1/8', 0.5], ['1/16', 0.25], ['1/32', 0.125], ['1/8T', 1 / 3], ['1/16T', 1 / 6]].map(([l, v]) => h('option', { value: v, selected: Math.abs(v - this.snap) < 1e-6 }, l)));
     const sel = [...this.selected];

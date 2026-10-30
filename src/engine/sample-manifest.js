@@ -89,3 +89,100 @@ export const SONICPI_FX = [
   { group: "Drones & Pads", name: "Choir Pad", file: 'fx/sonicpi-ambi_choir.flac', url: 'https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/dev/etc/samples/ambi_choir.flac', author: 'Sonic Pi (via Freesound)', page: 'https://github.com/sonic-pi-net/sonic-pi/blob/dev/etc/samples/README.md' },
   { group: "Drones & Pads", name: "Soft Buzz", file: 'fx/sonicpi-ambi_soft_buzz.flac', url: 'https://raw.githubusercontent.com/sonic-pi-net/sonic-pi/dev/etc/samples/ambi_soft_buzz.flac', author: 'Sonic Pi (via Freesound)', page: 'https://github.com/sonic-pi-net/sonic-pi/blob/dev/etc/samples/README.md' },
 ];
+
+// CC0 instruments from the Versilian libraries, pinned to a commit so the library can't shift under us.
+// The fetch script converts them to 16-bit FLAC. `path` is the upstream file with {n} for its note name;
+// `alt` lists notes with a different ending. `shift` turns the upstream octave numbers into scientific
+// pitch (middle C = C4); each one comes from measuring the samples' actual pitch, since most upstream
+// names are an octave low. The top kalimba tine (B4) is left out: it's mostly sympathetic ringing.
+export const VERSILIAN = {
+  vcsl: { name: 'Versilian Community Sample Library', url: 'https://github.com/sgossner/VCSL', raw: 'https://raw.githubusercontent.com/sgossner/VCSL/c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e/' },
+  vsco: { name: 'VSCO 2 Community Edition', url: 'https://github.com/sgossner/VSCO-2-CE', raw: 'https://raw.githubusercontent.com/sgossner/VSCO-2-CE/440300901dfe9275fd84e0b7763af1f8443ae62e/' },
+};
+
+export const CC0_INSTRUMENTS = {
+  "harpsichord": { repo: 'vcsl', path: "Chordophones/Zithers/Harpsichord, French/Sustains/Harpsi2_Normal_{n}_rr1_Main.wav", notes: 'D0 G#0 C1 E1 G#1 C2 E2 G#2 C3 E3 G#3 C4 E4 G#4 C5', stereo: true, shift: 1 },
+  "harpsichord-flemish": { repo: 'vcsl', path: "Chordophones/Zithers/Harpsichord, Flemish/Sustains/High/HarpsiRH_High_Far_{n}_rr1.wav", notes: 'F#1 A#1 C#2 E2 G#2 C#3 E3 G#3 C#4 E4 G#4 C5 E5 G#5 C6', stereo: true, shift: 1 },
+  "upright-piano": { repo: 'vcsl', path: "Chordophones/Zithers/Upright Piano, Yamaha/Sustains/Upright1_Sus_{n}_vl2_rr1.wav", notes: 'C0 G0 C1 G1 C2 G2 C3 G3 C4 G4 C5 G5 C6', stereo: true, shift: 1 },
+  "fm-piano": { repo: 'vcsl', path: "Electrophones/TX81Z/FM Piano/FMPiano_{n}_vl2.wav", notes: 'C0 G#0 E1 C2 G#2 E3 C4 G#4 E5 C6 G#6 C7', shift: 0 },
+  "clavisynth": { repo: 'vcsl', path: "Electrophones/TX81Z/Clavisynth/Clavisynth_{n}_vl2.wav", notes: 'C0 G#0 E1 C2 G#2 E3 C4 G#4 E5 C6', shift: 2 },
+  "marimba": { repo: 'vcsl', path: "Idiophones/Struck Idiophones/Marimba/Marimba_hit_Outrigger_{n}_loud_01.wav", notes: 'F1 C2 G2 B2 F3 C4 G4 B4 F5 C6', stereo: true, shift: 1 },
+  "vibraphone": { repo: 'vcsl', path: "Idiophones/Struck Idiophones/Vibraphone/Soft Mallets/Vibes_soft_{n}_v2_rr1_Main.wav", notes: 'F2 A2 C3 E3 G3 B3 D4 F4 A4 C5 E5', stereo: true, shift: 1 },
+  "glockenspiel": { repo: 'vcsl', path: "Idiophones/Struck Idiophones/Glockenspiel/glock_medium_{n}_01.wav", notes: 'G4 C5 G5 C6 G6 C7', shift: 1 },
+  "tubular-bells": { repo: 'vcsl', path: "Idiophones/Struck Idiophones/Tubular Bells 1/chimes_{n}_ff_rr2.wav", notes: 'C3 D3 E3 F#3 G#3 A#3 C4 D4 E4', alt: {"C3": "_f_rr1.wav", "D3": "_ff_rr1.wav", "F#3": "_fff_rr1.wav", "G#3": "_ff_rr1.wav", "A#3": "_ff_rr1.wav"}, stereo: true, shift: 2 },
+  "hand-chimes": { repo: 'vcsl', path: "Idiophones/Struck Idiophones/Hand Chimes/sus_{n}_r01_main.wav", notes: 'C3 E3 G#3 C4 E4 G#4 C5 E5 G#5 C6', stereo: true, shift: 1 },
+  "kalimba": { repo: 'vcsl', path: "Idiophones/Plucked Idiophones/Kalimba, Kenya/Mbira6_Normal_MainSpirit_{n}_k8_vl3_rr2.wav", notes: 'B2 C#3 D#3 F#3 G#3 B3 C#4 D#4 F#4 A4', alt: {"C#3": "_k7_vl3_rr2.wav", "D#3": "_k6_vl3_rr2.wav", "F#3": "_k10_vl3_rr2.wav", "G#3": "_k11_vl3_rr2.wav", "B3": "_k12_vl3_rr2.wav", "C#4": "_k2_vl3_rr2.wav", "D#4": "_k13_vl3_rr2.wav", "F#4": "_k14_vl3_rr2.wav", "A4": "_k1_vl3_rr2.wav", "B4": "_k15_vl3_rr2.wav"}, shift: 1 },
+  "recorder": { repo: 'vcsl', path: "Aerophones/Edge-blown Aerophones/Baroque Alto Recorder/Sustain/AltRecorder_Sus_{n}_rr1_Main.wav", notes: 'F3 G#3 C4 E4 G#4 C5 E5', shift: 1 },
+  "ocarina": { repo: 'vcsl', path: "Aerophones/Edge-blown Aerophones/Ocarina, Typical/Sustains/SusVib/StdOcarina_SusVib_{n}.wav", notes: 'A3 C4 D#4 F#4 A4 C5', shift: 1 },
+  "harmonica": { repo: 'vcsl', path: "Aerophones/Free Aerophones/Harmonica-Hohner-Super64/Sustains/Normal/Hohner-Super64_Normal _{n}.wav", notes: 'C2 G2 C3 G3 C4 G4 C5 G5 C6', shift: 1 },
+  "dan-tranh": { repo: 'vcsl', path: "Chordophones/Zithers/Dan Tranh/Normal/{n}_mf_1.wav", notes: 'B1 D#2 F#2 C#3 F#3 B3 D#4 F#4 B4', stereo: true, shift: 1 },
+  "psaltery": { repo: 'vcsl', path: "Chordophones/Zithers/Psaltery, Bowed and Plucked/Pluck/BowedPsaltery_{n}_Main_Pluck_rr1.wav", notes: 'A#3 C4 D4 E4 F#4 G#4 A#4 C5 D5 E5 F#5', alt: {"E4": "_Main_Pluck_rr2.wav", "G#4": "_Main_Pluck_rr3.wav", "F#5": "_Main_Pluck_rr3.wav"}, stereo: true, shift: 1 },
+  "folk-harp": { repo: 'vcsl', path: "Chordophones/Composite Chordophones/Folk Harp/EWHarp_Normal_{n}_v2_RR1.wav", notes: 'C1 E1 G#1 C2 E2 G#2 C3 E3 G#3 C4 E4 G#4 C5 E5 G#5', stereo: true, shift: 1 },
+  "saxello": { repo: 'vcsl', path: "Aerophones/Reed Aerophones/Saxello/Vibrato/BrettSaxello_SusVB_MainSpirit_{n}_vl2_rr1.wav", notes: 'A#2 D3 F#3 A#3 D4 F#4 A#4 D#5', shift: 1 },
+  "violin-section": { repo: 'vsco', path: "Strings/Violin Section/susVib/VlnEns_susVib_{n}_v2.wav", notes: 'G2 B2 D3 F#3 A3 C4 E4 G4 B4 D5', stereo: true, shift: 1 },
+  "viola-section": { repo: 'vsco', path: "Strings/Viola Section/susvib/ViolaEns_susvib_{n}_v2_1.wav", notes: 'C2 E2 G2 B2 D3 F3 A3 C4 E4 G4 B4 D5', stereo: true, shift: 1 },
+  "cello-section": { repo: 'vsco', path: "Strings/Cello Section/susvib/susvib_{n}_v3_1.wav", notes: 'C1 E1 G1 B1 D2 F2 A2 C3 E3 G3 B3 D4 F4', stereo: true, shift: 1 },
+  "contrabass-arco": { repo: 'vsco', path: "Strings/Solo Contrabass/SusVib/BKCtbss_SusVib_{n}_v3_rr1.wav", notes: 'F#0 A#0 D1 F#1 A1 C#2 E2 G#2 B2', shift: 1 },
+  "violin-trem": { repo: 'vsco', path: "Strings/Violin Section/Trem/VlnEns_Trem_{n}_v1.wav", notes: 'G2 B2 D3 F#3 A3 C4 E4 G4 B4 D5', stereo: true, shift: 1 },
+  "viola-trem": { repo: 'vsco', path: "Strings/Viola Section/trem/Violas_trem_{n}_v2_rr1.wav", notes: 'C2 E2 G2 B2 D3 F3 A3 C4 E4 G4 B4 D5', stereo: true, shift: 1 },
+  "cello-trem": { repo: 'vsco', path: "Strings/Cello Section/trem/trem_{n}_v2_1.wav", notes: 'C1 E1 G1 B1 D2 F2 A2 C3 E3 G3 B3 D4 F4', alt: {"B1": "_v1_1.wav"}, stereo: true, shift: 1 },
+  "violin-pizz": { repo: 'vsco', path: "Strings/Violin Section/Pizz/VlnEns_Pizz_{n}_v1_rr1.wav", notes: 'G2 B2 D3 F#3 A3 C4 E4 G4 B4 D5', stereo: true, shift: 1 },
+  "viola-pizz": { repo: 'vsco', path: "Strings/Viola Section/pizz/ViolaEns_pizz_{n}_v2_rr1.wav", notes: 'C2 E2 G2 B2 D3 F3 A3 C4 E4 G4 B4 D5', alt: {"D5": "_v1_rr1.wav"}, stereo: true, shift: 1 },
+  "cello-pizz": { repo: 'vsco', path: "Strings/Cello Section/pizzT/pizzT_{n}_v2_RR1.wav", notes: 'C1 E1 G1 B1 D2 F2 A2 C3 E3 G3 B3 D4 F4', stereo: true, shift: 1 },
+  "contrabass-pizz": { repo: 'vsco', path: "Strings/Solo Contrabass/Pizz/BKCtbss_Pizz_{n}_v1_rr1.wav", notes: 'E0 G0 A#0 D1 F#1 A1 C#2 E2 G#2 B2', shift: 1 },
+  "violin-spic": { repo: 'vsco', path: "Strings/Violin Section/Spic/VlnEns_Spic_{n}_v1_rr1.wav", notes: 'G2 B2 D3 F#3 A3 C4 E4 G4 B4 D5', stereo: true, shift: 1 },
+  "viola-spic": { repo: 'vsco', path: "Strings/Viola Section/spic/Violas_spic_{n}_v2_rr1.wav", notes: 'C2 E2 G2 B2 D3 F3 A3 C4 E4 G4 B4 D5', stereo: true, shift: 1 },
+  "cello-spic": { repo: 'vsco', path: "Strings/Cello Section/spic/spic_{n}_v2_RR1.wav", notes: 'C1 E1 G1 B1 D2 F2 A2 C3 E3 G3 B3 D4 F4', stereo: true, shift: 1 },
+  "trumpet-vib": { repo: 'vsco', path: "Brass/Trumpet/susvib/Sum_SHTrumpet_susvib_{n}_v1_rr1.wav", notes: 'F2 A2 C3 D#3 G3 A#3 D4 F4 A4 C5', shift: 1 },
+  "trumpet-harmon": { repo: 'vsco', path: "Brass/Trumpet/harmonM-sus/Sum_SHTrumpet_harmonM-sus_{n}_v1_rr1.wav", notes: 'A#2 D#3 G#3 D4 F4 A4', shift: 1 },
+  "trumpet-straight": { repo: 'vsco', path: "Brass/Trumpet/straightM-sus/Sum_SHTrumpet_straightM-sus_{n}_v1_rr1.wav", notes: 'A#2 D3 G3 A#3 D4 F4 A4', shift: 1 },
+  "trumpet-stac": { repo: 'vsco', path: "Brass/Trumpet/stac/Sum_SHTrumpet_stac_{n}_v3_rr1.wav", notes: 'F2 A2 C3 D#3 G3 A#3 D4 F4 A4 C5', shift: 1 },
+  "horn-mute": { repo: 'vsco', path: "Brass/F Horn/mute/MOHorn_mute_{n}_v2_1.wav", notes: 'A#1 D#2 C3 D#3 G#3 D4 F4', alt: {"C3": "_v3_1.wav", "D4": "_v1_1.wav", "F4": "_v1_1.wav"}, shift: 1 },
+  "horn-stac": { repo: 'vsco', path: "Brass/F Horn/stac/MOHorn_stac_{n}_v3_rr1.wav", notes: 'A0 C1 D#1 G1 A#1 D2 F2 A2 C3 D4 F4', alt: {"A0": "_v1_rr1.wav", "C1": "_v2_rr1.wav", "D#1": "_v2_rr1.wav", "G1": "_v2_rr1.wav"}, shift: 1 },
+  "trombone-vib": { repo: 'vsco', path: "Brass/Tenor Trombone/vib/tenortbn_vib_{n}_v1_1.wav", notes: 'F1 G#1 C2 D#2 G#2 C3 D#3', shift: 1 },
+  "trombone-stac": { repo: 'vsco', path: "Brass/Tenor Trombone/stac/tenortbn_stac_{n}_v3_rr1.wav", notes: 'A#0 F1 A#1 F2 A#2 D3 F3', shift: 1 },
+  "tuba-stac": { repo: 'vsco', path: "Brass/Tuba/stac/Tuba3_stac_{n}_v2_rr1_Sum.wav", notes: 'A#0 D#1 A#1 D2 F2 A#2 D3', shift: 1 },
+  "oboe": { repo: 'vsco', path: "Woodwinds/Oboe/Vib/Oboe_Vib_{n}_v1_Main.wav", notes: 'A#2 D3 F3 A#3 D4 F4 A#4 D5 F5', shift: 1 },
+  "piccolo": { repo: 'vsco', path: "Woodwinds/Piccolo/Sus/piccolo_{n}_sustain1.wav", notes: 'G4 C5 G5 C6 G6', shift: 1 },
+};
+
+// Percussion one-shots for the sample browser (VCSL, CC0).
+export const CC0_PERCUSSION = [
+  { group: 'Percussion', name: "Conga, Open", file: "perc/conga-open.flac", path: "Membranophones/Struck Membranophones/Conga/Conga_HitN_v3_rr1_Sum.wav" },
+  { group: 'Percussion', name: "Conga, Quinto", file: "perc/conga-quinto.flac", path: "Membranophones/Struck Membranophones/Conga/Quinto_HitN_v2_rr1_Sum.wav" },
+  { group: 'Percussion', name: "Conga, Tumba", file: "perc/conga-tumba.flac", path: "Membranophones/Struck Membranophones/Conga/Tumba_HitN_v4_rr1_Sum.wav" },
+  { group: 'Percussion', name: "Bongo, High", file: "perc/bongo-high.flac", path: "Membranophones/Struck Membranophones/Bongos/BongoH_Hit1_v1_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Bongo, Low", file: "perc/bongo-low.flac", path: "Membranophones/Struck Membranophones/Bongos/BongoL_Hit1_v1_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Darbuka", file: "perc/darbuka.flac", path: "Membranophones/Struck Membranophones/Darbuka/Darbuka_1_hit_vl1_rr1.wav" },
+  { group: 'Percussion', name: "Frame Drum", file: "perc/frame-drum.flac", path: "Membranophones/Struck Membranophones/Frame Drum/HDrumL_Hit_v3_rr2_Sum.wav" },
+  { group: 'Percussion', name: "Cajon", file: "perc/cajon.flac", path: "Idiophones/Struck Idiophones/Cajon/Cajon_hit1_f_rr1.wav" },
+  { group: 'Percussion', name: "Tambourine Hit", file: "perc/tambourine-hit.flac", path: "Idiophones/Struck Idiophones/Tambourine 1/Tamb1_Hit_v2_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Tambourine Roll", file: "perc/tambourine-roll.flac", path: "Idiophones/Struck Idiophones/Tambourine 1/Tamb1_Roll_v2_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Shaker, Small", file: "perc/shaker-small.flac", path: "Idiophones/Struck Idiophones/Shaker, Small/Mid_ShakerDouble_Down_rr1.wav" },
+  { group: 'Percussion', name: "Shaker, Large", file: "perc/shaker-large.flac", path: "Idiophones/Struck Idiophones/Shaker, Large/LShaker_Shake1D_rr2_Mid.wav" },
+  { group: 'Percussion', name: "Cowbell", file: "perc/cowbell.flac", path: "Idiophones/Struck Idiophones/Cowbells/Cowbell1_Normal_v3_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Claves", file: "perc/claves.flac", path: "Idiophones/Struck Idiophones/Claves/Claves1_Hit_v1_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Woodblock", file: "perc/woodblock.flac", path: "Idiophones/Struck Idiophones/Woodblock/wood_click_f_rr2.wav" },
+  { group: 'Percussion', name: "Triangle", file: "perc/triangle.flac", path: "Idiophones/Struck Idiophones/Triangles/Triangle1_Hit_v1_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Cabasa", file: "perc/cabasa.flac", path: "Idiophones/Struck Idiophones/Cabasa/Cabasa1_Hit_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Guiro", file: "perc/guiro.flac", path: "Idiophones/Struck Idiophones/Guiro/Guiro_Med_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Agogo, High", file: "perc/agogo-high.flac", path: "Idiophones/Struck Idiophones/Agogo Bells/Agogo_High_v1_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Agogo, Low", file: "perc/agogo-low.flac", path: "Idiophones/Struck Idiophones/Agogo Bells/Agogo_Low_v1_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Sleigh Bells", file: "perc/sleigh-bells.flac", path: "Idiophones/Struck Idiophones/Sleigh Bells/Sleighbells_Hit_rr1_Mid.wav" },
+  { group: 'Percussion', name: "Vibraslap", file: "perc/vibraslap.flac", path: "Idiophones/Struck Idiophones/Vibraslap/Legacy/vibraslap_rr1.wav" },
+  { group: 'Percussion', name: "Hand Clap", file: "perc/hand-clap.flac", path: "Idiophones/Struck Idiophones/Claps/Clap_rr1.wav" },
+  { group: 'Percussion', name: "Wind Chimes", file: "perc/wind-chimes.flac", path: "Idiophones/Struck Idiophones/Mark Trees/Legacy/windchimes_asc1.wav" },
+  { group: 'Percussion', name: "Finger Cymbals", file: "perc/finger-cymbals.flac", path: "Idiophones/Struck Idiophones/Finger Cymbals/Fing_Cymb.wav" },
+  { group: 'Percussion', name: "Log Drum", file: "perc/log-drum.flac", path: "Idiophones/Struck Idiophones/Slit Drum/LogDrumHi_MedM_v2_rr1_Sum.wav" },
+];
+
+const NAMES = ['C', 'Cs', 'D', 'Ds', 'E', 'F', 'Fs', 'G', 'Gs', 'A', 'As', 'B'];
+
+// A CC0 instrument's samples: the upstream note name and the file it's saved as (e.g. "Cs4").
+export function cc0Samples(dir) {
+  const { notes, shift = 0 } = CC0_INSTRUMENTS[dir];
+  return notes.split(' ').map(upstream => {
+    const [, letter, octave] = upstream.match(/^([A-G]#?)(-?\d)$/);
+    return { upstream, name: NAMES[NAMES.indexOf(letter.replace('#', 's'))] + (Number(octave) + shift) };
+  });
+}

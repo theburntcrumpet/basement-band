@@ -19,8 +19,8 @@ export class NativeAudio extends EventTarget {
     this.chunks = null;
     this.monitoring = false;
     bridge.addEventListener('inputLevel', e => { this.peak = Math.max(this.peak * 0.7, e.detail.peak); });
-    bridge.addEventListener('input', e => this.chunks?.push(e.detail));
-    bridge.addEventListener('crash', () => { this.device = null; this.monitoring = false; });
+    bridge.addEventListener('input', e => { this.chunks?.push(e.detail); this.tap?.(e.detail.data); });
+    bridge.addEventListener('crash', () => { this.device = null; this.monitoring = false; this.tap = null; });
   }
 
   async devices() {
@@ -72,6 +72,19 @@ export class NativeAudio extends EventTarget {
     const d = this.device;
     if (!d) return null;
     return Math.round(((d.inputLatency || 0) + (d.outputLatency || 0) + d.buffer) / d.rate * 1000 + 1);
+  }
+
+  // Listens to the clean input without keeping it (the tuner). It uses the helper's recording stream,
+  // so it has to stop before a real recording starts.
+  async startTap(listener) {
+    this.tap = listener;
+    await bridge.call('record:start');
+  }
+
+  async stopTap() {
+    if (!this.tap) return;
+    this.tap = null;
+    await bridge.call('record:stop').catch(() => {});
   }
 
   async startRecording() {

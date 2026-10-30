@@ -40,6 +40,18 @@
         "to": "assets"
       },
       {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "LICENSES.md",
+        "to": "LICENSES.md"
+      },
+      {
+        "from": "licenses",
+        "to": "licenses"
+      },
+      {
         "from": "plugins",
         "to": "plugins",
         "filter": [
