@@ -264,7 +264,7 @@ module.exports = async function flows(win, app) {
     const fx = builtinSamples().filter(s => s.credit);
     let total = 0;
     for (const s of fx) { const b = await loadBuffer(s.url); if (!(b.duration > 0.2)) return s.name + ' broken'; total += b.duration; }
-    return fx.length === 45 ? 'ok ' + fx.length + ' sounds, ' + Math.round(total) + ' s' : 'count ' + fx.length;`);
+    return fx.length === 71 ? 'ok ' + fx.length + ' sounds, ' + Math.round(total) + ' s' : 'count ' + fx.length;`);
 
   await check('export dialog and every format', `
     store.dirty = false;
@@ -1093,6 +1093,173 @@ module.exports = async function flows(win, app) {
   await js(`const t = store.project.tracks.find(t => t.instrument === 'electric-piano'); app.openEditor(t.regions[0].id); app.toggleTyping();`);
   await new Promise(r => setTimeout(r, 400));
   await shot('07-flows-pianoroll-typing');
+
+  await check('playback stops at the end of the song, except when cycling or past the end', `
+    store.dirty = false;
+    await app.newSong();
+    const t = app.addTrack('instrument', 'grand-piano', 'Piano');
+    store.update(p => { p.bpm = 240; t.regions.push({ id: 'end', start: 0, length: 4, loopLength: 4, notes: [{ t: 0, d: 1, n: 60, v: 0.8 }] }); });
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    app.seek(0);
+    await app.togglePlay();
+    await wait(600);
+    const midway = app.engine.playing;
+    await wait(1700);
+    const stopped = !app.engine.playing && store.ui.playhead === 0;
+    store.update(p => { p.cycle = { ...p.cycle, on: true, start: 0, end: 2 }; });
+    await app.togglePlay();
+    await wait(1500);
+    const cycling = app.engine.playing;
+    await app.stop();
+    store.update(p => { p.cycle.on = false; });
+    app.seek(8);
+    await app.togglePlay();
+    await wait(700);
+    const jamming = app.engine.playing;
+    await app.stop();
+    app.seek(0);
+    return midway && stopped && cycling && jamming ? 'ok' : JSON.stringify({ midway, stopped, cycling, jamming, at: store.ui.playhead });`);
+  // Real mouse events, because selecting on the first click rebuilds parts of the page.
+  const doubleClick = async (selector, dx = 20) => {
+    const at = await js(`const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(r.left + Math.min(r.width / 2, ${dx})), y: Math.round(r.top + r.height / 2) };`);
+    for (const clickCount of [1, 2]) {
+      win.webContents.sendInputEvent({ type: 'mouseDown', ...at, button: 'left', clickCount });
+      win.webContents.sendInputEvent({ type: 'mouseUp', ...at, button: 'left', clickCount });
+    }
+    await new Promise(r => setTimeout(r, 200));
+    return js(`return app.bottomMode + ':' + (app.editor.regionId || '') + ':' + store.ui.selectedTrack;`);
+  };
+  await js(`
+    store.dirty = false;
+    await app.newSong();
+    const keys = app.addTrack('instrument', 'grand-piano', 'Keys');
+    const voice = app.addTrack('audio', null, 'Voice');
+    store.update(() => {
+      keys.regions.push({ id: 'dc-keys', start: 0, length: 4, loopLength: 4, notes: [{ t: 0, d: 1, n: 60, v: 0.8 }] });
+      voice.regions.push({ id: 'dc-voice', start: 0, length: 4, loopLength: 4, audioId: 'none' });
+    });
+    window.__keys = keys.id; window.__voice = voice.id;
+    app.bottomMode = null; app.refresh();`);
+  const ids = JSON.parse(await js(`return JSON.stringify([__keys, __voice]);`));
+  const expectOpen = (name, got, want) => results.push(`${got === want ? 'PASS' : 'FAIL'} double-click ${name}: ${got === want ? 'ok' : got + ' (wanted ' + want + ')'}`);
+  const reset = () => js(`app.bottomMode = null; app.editor.open(null); app.refresh();`);
+  expectOpen('an instrument region opens the piano roll', await doubleClick('.region[data-id="dc-keys"]'), `editor:dc-keys:${ids[0]}`);
+  await reset();
+  expectOpen('an audio region opens its controls', (await doubleClick('.region[data-id="dc-voice"]')).replace(/:[^:]*:/, '::'), `smart::${ids[1]}`);
+  await reset();
+  expectOpen('an instrument track header opens the piano roll', await doubleClick(`.track[data-id="${ids[0]}"] .track-icon`), `editor:dc-keys:${ids[0]}`);
+  await reset();
+  expectOpen('an audio track header opens its controls', (await doubleClick(`.track[data-id="${ids[1]}"] .track-icon`)).replace(/:[^:]*:/, '::'), `smart::${ids[1]}`);
+  await reset();
+  await doubleClick(`.track[data-id="${ids[0]}"] .lane-grid`, 300);
+  expectOpen('an empty instrument lane adds a region and opens it', await js(`return store.track(__keys).regions.length + ':' + app.bottomMode;`), '2:editor');
+  await reset();
+  expectOpen('an empty audio lane opens its controls', (await doubleClick(`.track[data-id="${ids[1]}"] .lane-grid`, 300)).split(':')[0], 'smart');
+  await reset();
+  await doubleClick(`.track[data-id="${ids[0]}"] .track-name`);
+  expectOpen('a track name still renames it', await js(`const on = !!document.querySelector('.track-name input'); document.activeElement?.blur?.(); app.refresh(); return String(on);`), 'true');
+  await js(`store.update(p => { p.markers = [{ id: 'dc-sec', name: 'Verse', start: 0, color: '#88f' }]; }); app.refresh();`);
+  await doubleClick('.section-block');
+  expectOpen('a section renames it', await js(`const t = document.querySelector('#modal h2')?.textContent; document.querySelector('#modal').click(); return t;`), 'Rename section');
+
+  await check('the tuner hears the input and reads out a note (Web Audio)', `
+    await app.tuner.start();
+    if (!app.engine.tuner) return 'not listening';
+    let heard = null;
+    for (let i = 0; i < 80 && !heard; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      if (document.querySelector('.tuner-read span:last-child').textContent) heard = document.querySelector('.tuner-note').textContent + ' ' + document.querySelector('.tuner-read span:last-child').textContent;
+    }
+    const button = document.querySelector('#btn-tuner').classList.contains('on');
+    await app.tuner.stop();
+    const closed = !app.engine.tuner && document.querySelector('#tuner').classList.contains('hidden') && !app.engine.inputStream;
+    return heard && button && closed ? 'ok fake device heard as ' + heard : JSON.stringify({ heard, button, closed });`);
+  await check('the tuner shows sharp, flat and in tune, and honours the reference pitch', `
+    const tone = hz => Float32Array.from({ length: 8192 }, (_, i) => 0.3 * Math.sin(2 * Math.PI * hz * i / 48000));
+    const real = app.engine.tunerInput;
+    await app.tuner.start();
+    const read = hz => {
+      app.engine.tunerInput = () => ({ data: tone(hz), rate: 48000 });
+      app.tuner.readings = []; app.tuner.lastRead = 0;
+      app.tuner.update(performance.now());
+      return document.querySelector('.tuner-note').textContent + ' ' + document.querySelector('.tuner-read span').textContent + ' ' + document.querySelector('#tuner').classList.contains('in-tune');
+    };
+    const sharp = read(112), inTune = read(110), flat = read(107);
+    const saved = app.settings.tunerA4;
+    app.tuner.setA4(432);
+    const baroque = read(108);
+    app.settings.tunerA4 = saved;
+    app.engine.tunerInput = real;
+    await app.tuner.stop();
+    const want = ['A2 31 cents sharp false', 'A2 In tune true', 'A2 48 cents flat false', 'A2 In tune true'];
+    const got = [sharp, inTune, flat, baroque];
+    return JSON.stringify(got) === JSON.stringify(want) ? 'ok' : JSON.stringify(got);`);
+  await check('the toolbar fits a laptop screen with the tuner button', `
+    const bar = document.querySelector('#toolbar');
+    bar.style.width = '1366px';
+    const fits = bar.scrollWidth <= bar.clientWidth + 1;
+    const measured = bar.scrollWidth;
+    bar.style.width = '';
+    return fits ? 'ok ' + measured : 'overflows: needs ' + measured + ' px of 1366';`);
+  await check('toolbar icons sit in the centre of their buttons', `
+    const off = [...document.querySelectorAll('#toolbar .tool svg')].filter(i => {
+      const a = i.getBoundingClientRect(), b = i.parentElement.getBoundingClientRect();
+      return Math.abs(a.left + a.right - b.left - b.right) > 1 || Math.abs(a.top + a.bottom - b.top - b.bottom) > 1;
+    }).map(i => i.parentElement.id);
+    return document.querySelectorAll('#toolbar .tool svg').length >= 10 && !off.length ? 'ok' : 'off-centre: ' + off;`);
+  await check('every built-in instrument loads its samples', `
+    const { INSTRUMENTS, loadInstrumentBuffers } = await import('./engine/instruments.js');
+    const bad = [];
+    for (const inst of INSTRUMENTS) {
+      if (inst.type !== 'sampler') continue;
+      try { const b = await loadInstrumentBuffers(inst.id); if (!Object.keys(b).length) bad.push(inst.id); } catch (e) { bad.push(inst.id + ': ' + e.message); }
+    }
+    return bad.length ? bad.join(', ') : 'ok ' + INSTRUMENTS.length + ' instruments';`);
+  await check('every percussion sample decodes', `
+    const { builtinSamples, loadBuffer } = await import('./engine/instruments.js');
+    const perc = builtinSamples().filter(s => s.group === 'Percussion');
+    await Promise.all(perc.map(s => loadBuffer(s.url)));
+    return perc.length > 20 ? 'ok ' + perc.length : 'only ' + perc.length;`);
+  await check('sounds can be searched, and the box keeps focus', `
+    app.library.show('sounds');
+    const box = document.querySelector('#library-body .lib-search');
+    box.focus();
+    const type = q => { box.value = q; box.dispatchEvent(new Event('input')); return [...document.querySelectorAll('#library-body .lib-item .name')].map(e => e.textContent); };
+    const harpsichord = type('HARPSI');
+    const words = type('muted horn');
+    const none = type('kazoo');
+    const note = document.querySelector('#library-body .lib-note')?.textContent || '';
+    type('');
+    app.library.render();
+    const kept = document.activeElement === document.querySelector('#library-body .lib-search');
+    return harpsichord.length === 2 && words.length === 1 && none.length === 0 && note.includes('kazoo') && kept ? 'ok' : JSON.stringify({ harpsichord, words, none, note, kept });`);
+  await check('samples can be searched across closed groups', `
+    app.library.show('samples');
+    const box = document.querySelector('#library-body .lib-search');
+    box.value = 'tambourine'; box.dispatchEvent(new Event('input'));
+    const names = [...document.querySelectorAll('#library-body .lib-item:not(.folder-head) .name')].map(e => e.textContent);
+    box.value = ''; box.dispatchEvent(new Event('input'));
+    app.library.show('sounds');
+    return names.length === 2 ? 'ok' : names.join(', ');`);
+  await check('Smart Controls fold up to fit instead of scrolling sideways', `
+    const { newTrack } = await import('./state.js');
+    const { defaultAmp } = await import('./engine/amp.js');
+    app.settings.smartPanels = null;
+    store.update(() => { const t = newTrack('audio'); t.amp = defaultAmp('crunch'); store.project.tracks.push(t); store.ui.selectedTrack = t.id; });
+    app.bottomMode = 'smart'; app.refresh();
+    const smart = document.querySelector('.smart');
+    const box = document.querySelector('#bottom-body');
+    box.style.width = '900px';
+    app.smart.fitPanels();
+    const collapsed = () => [...document.querySelectorAll('.panel.collapsed')].map(p => p.dataset.panel);
+    const narrow = collapsed(), fits = smart.scrollWidth <= smart.clientWidth + 1;
+    document.querySelector('.panel[data-panel="effect"] .panel-head').click();
+    const opened = !collapsed().includes('effect') && smart.scrollWidth <= smart.clientWidth + 1;
+    document.querySelector('.panel[data-panel="effect"] .panel-head').click();
+    const closed = collapsed().includes('effect') && app.settings.smartPanels.closed.includes('effect');
+    box.style.width = '';
+    app.settings.smartPanels = null;
+    return narrow.length && fits && opened && closed ? 'ok ' + narrow : JSON.stringify({ narrow, fits, opened, closed });`);
 
   console.log('\n' + results.join('\n'));
   app.quit();

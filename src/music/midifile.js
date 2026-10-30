@@ -7,12 +7,19 @@
 export function gmToInstrument(program) {
   const p = program;
   if (p === 4 || p === 5) return 'electric-piano';
-  if (p === 6 || p === 7) return 'clav';
+  if (p === 6) return 'harpsichord';
+  if (p === 7) return 'clav';
+  if (p === 3) return 'upright-piano';
   if (p < 8) return 'grand-piano';
+  if (p === 9) return 'glockenspiel';
+  if (p === 10) return 'music-box';
   if (p === 11) return 'vibes';
-  if (p === 12 || p === 13) return 'xylophone';
+  if (p === 12) return 'marimba';
+  if (p === 13) return 'xylophone';
+  if (p === 14) return 'tubular-bells';
   if (p < 16) return 'bells';
   if (p === 19) return 'church-organ';
+  if (p === 22) return 'harmonica';
   if (p === 20 || p === 21 || p === 23) return 'harmonium';
   if (p < 24) return 'tonewheel-organ';
   if (p === 24) return 'nylon-guitar';
@@ -24,17 +31,28 @@ export function gmToInstrument(program) {
   if (p < 40) return 'electric-bass';
   if (p === 40 || p === 41) return 'violin';
   if (p === 42) return 'cello';
+  if (p === 44) return 'tremolo-strings';
+  if (p === 45) return 'pizz-strings';
   if (p === 46) return 'harp';
+  if (p === 49) return 'chamber-strings';
+  if (p === 50 || p === 51) return 'string-machine';
   if (p === 52 || p === 53 || p === 54) return 'glass-pad';
   if (p < 56) return 'strings';
-  if (p === 56 || p === 59) return 'trumpet';
+  if (p === 56) return 'trumpet';
+  if (p === 59) return 'trumpet-straight';
   if (p === 57) return 'trombone';
   if (p === 58) return 'tuba';
   if (p === 60) return 'french-horn';
+  if (p === 62 || p === 63) return 'synth-brass';
   if (p < 64) return 'brass';
+  if (p === 64) return 'saxello';
   if (p < 68) return 'saxophone';
+  if (p === 68 || p === 69) return 'oboe';
   if (p === 70) return 'bassoon';
   if (p < 72) return 'clarinet';
+  if (p === 72) return 'piccolo';
+  if (p === 74) return 'recorder';
+  if (p === 79) return 'ocarina';
   if (p < 80) return 'flute';
   if (p === 80) return 'square-lead';
   if (p < 88) return 'saw-lead';
@@ -42,6 +60,7 @@ export function gmToInstrument(program) {
   if (p < 96) return 'warm-pad';
   if (p < 104) return 'glass-pad';
   if (p === 104 || p === 105 || p === 106 || p === 107) return 'nylon-guitar';
+  if (p === 108) return 'kalimba';
   if (p < 112) return 'harp';
   if (p < 120) return 'xylophone';
   return 'chip';
@@ -55,6 +74,12 @@ const GM_OF = {
   'strings': 48, 'violin': 40, 'cello': 42, 'harp': 46, 'brass': 61, 'trumpet': 56, 'trombone': 57, 'french-horn': 60, 'tuba': 58,
   'saxophone': 66, 'flute': 73, 'clarinet': 71, 'bassoon': 70, 'xylophone': 13, 'vibes': 11, 'bells': 14,
   'warm-pad': 89, 'glass-pad': 88, 'saw-lead': 81, 'square-lead': 80, 'pluck': 84, 'chip': 80,
+  'harpsichord': 6, 'harpsichord-flemish': 6, 'upright-piano': 3, 'fm-piano': 5, 'clavisynth': 7, 'pizz-bass': 32, 'fm-bass': 38, 'acid-bass': 38, 'reese-bass': 39,
+  'chamber-strings': 49, 'violin-section': 48, 'viola-section': 48, 'cello-section': 48, 'contrabass': 43, 'pizz-strings': 45, 'spiccato-strings': 48, 'tremolo-strings': 44, 'folk-harp': 46, 'dan-tranh': 107, 'psaltery': 15,
+  'warm-brass': 61, 'brass-stabs': 61, 'trumpet-vib': 56, 'trumpet-harmon': 59, 'trumpet-straight': 59, 'trombone-vib': 57, 'horn-mute': 60, 'horn-stac': 60,
+  'oboe': 68, 'piccolo': 72, 'recorder': 74, 'ocarina': 79, 'saxello': 64, 'harmonica': 22,
+  'marimba': 12, 'concert-vibes': 11, 'glockenspiel': 9, 'tubular-bells': 14, 'hand-chimes': 14, 'kalimba': 108,
+  'poly-synth': 90, 'super-saw': 81, 'house-stab': 81, 'synth-brass': 62, 'string-machine': 50, 'sweep-pad': 95, 'choir-pad': 91, 'hollow-pad': 89, 'sine-lead': 80, 'bell-pluck': 98, 'music-box': 10,
 };
 export const instrumentToGm = id => GM_OF[id] ?? 0;
 

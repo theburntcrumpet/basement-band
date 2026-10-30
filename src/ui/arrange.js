@@ -1,5 +1,6 @@
 // The arrangement: ruler, cycle range, track headers, lanes and regions.
 
+import { icon } from './icons.js';
 import { h, $, drag, contextMenu, canvas2d, palette } from './dom.js';
 import { AUTO_PARAMS, AUTO_PARAM, curve, valueAt, staticValue, normalize } from '../engine/automation.js';
 import { sections } from '../arrangement.js';
@@ -150,7 +151,7 @@ export class Arrange {
         h('button', { class: 'mute' + (track.mute ? ' on' : ''), title: 'Mute', onclick: e => { e.stopPropagation(); store.update(() => { track.mute = !track.mute; }); } }, 'M'),
         h('button', { class: 'solo' + (track.solo ? ' on' : ''), title: 'Solo', onclick: e => { e.stopPropagation(); store.update(() => { track.solo = !track.solo; }); } }, 'S'),
         h('button', { class: 'auto' + (store.ui.autoLanes?.has(track.id) ? ' on' : '') + (track.automation && Object.values(track.automation).some(c => c.length) ? ' has' : ''), title: 'Automation: change volume, pan, effects or EQ over time', onclick: e => { e.stopPropagation(); this.toggleAutomation(track); } }, 'A'),
-        track.type === 'audio' ? h('button', { class: 'monitor' + (this.app.monitorTrack === track.id ? ' on' : ''), title: 'Monitor input (hear yourself through this track)', onclick: e => { e.stopPropagation(); this.app.toggleMonitor(track); } }, '🎧') : null,
+        track.type === 'audio' ? h('button', { class: 'monitor' + (this.app.monitorTrack === track.id ? ' on' : ''), title: 'Monitor input (hear yourself through this track)', onclick: e => { e.stopPropagation(); this.app.toggleMonitor(track); } }, icon('headphones')) : null,
       ),
       h('div', { class: 'track-mix' },
         h('input', {
@@ -165,6 +166,10 @@ export class Arrange {
     );
     header.addEventListener('mousedown', () => this.selectTrack(track.id));
     nameEl.addEventListener('dblclick', () => this.rename(track, nameEl));
+    header.addEventListener('dblclick', e => {
+      // The name renames, and the buttons and slider are for quick repeated clicks.
+      if (!e.target.closest('.track-name, button, input')) this.app.openTrack(track);
+    });
     header.addEventListener('contextmenu', e => {
       e.preventDefault();
       this.selectTrack(track.id);
@@ -184,10 +189,9 @@ export class Arrange {
       this.selectTrack(track.id);
       store.ui.selectedRegions.clear();
       this.app.refresh();
-    });
-    lane.addEventListener('dblclick', e => {
-      if (e.target !== lane && !e.target.classList.contains('lane-grid')) return;
-      if (track.type === 'audio') return;
+      // A second click's target has been replaced by the refresh, so no dblclick event ever arrives.
+      if (e.detail !== 2) return;
+      if (track.type === 'audio') return this.app.openTrack(track);
       const bar = this.meter.barBeats;
       const beat = Math.floor(this.beatFromClientX(e.clientX) / bar) * bar;
       this.app.createEmptyRegion(track, beat);
@@ -226,7 +230,6 @@ export class Arrange {
     requestAnimationFrame(() => this.drawRegion(cv, track, region, w));
 
     el.addEventListener('mousedown', e => this.regionDown(e, track, region));
-    el.addEventListener('dblclick', () => this.app.openEditor(region.id));
     el.addEventListener('contextmenu', e => {
       e.preventDefault();
       if (!store.ui.selectedRegions.has(region.id)) {
@@ -361,7 +364,6 @@ export class Arrange {
         title: `${sec.name}: click to jump here, double-click to rename, right-click for more, drag the left edge to move`,
       }, h('span', {}, sec.name), h('div', { class: 'section-edge' }));
       el.addEventListener('mousedown', e => this.sectionDown(e, sec));
-      el.addEventListener('dblclick', () => this.app.renameSection(sec));
       el.addEventListener('contextmenu', e => { e.preventDefault(); this.app.sectionMenu(e.clientX, e.clientY, sec); });
       return el;
     }) : [h('div', { class: 'arr-hint' }, 'Mark the parts of your song (Intro, Verse, Chorus…) with ＋ to duplicate, delete or loop them.')]));
@@ -375,6 +377,7 @@ export class Arrange {
     if (!edge) {
       this.app.seek(sec.start);
       this.app.refresh();
+      if (e.detail === 2) this.app.renameSection(sec); // (the refresh rules out a dblclick listener)
       return;
     }
     // Dragging the left edge moves where the section starts (the previous one grows or shrinks).
@@ -643,6 +646,9 @@ export class Arrange {
     }
     ui.selectedTrack = track.id;
     this.app.refresh();
+    // Checked here, not with a dblclick listener: the refresh above replaces this element, so the
+    // browser never sends one.
+    if (e.detail === 2 && !e.shiftKey) return this.app.openTrack(track, region.id);
 
     const mode = e.target.classList.contains('handle-resize') ? 'resize' : e.target.classList.contains('handle-loop') ? 'loop' : 'move';
     const tracks = store.project.tracks;

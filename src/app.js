@@ -1,5 +1,7 @@
 // App controller: wires the store, audio engine and UI together.
 
+import { fillIcons } from './ui/icons.js';
+import { Tuner } from './ui/tuner.js';
 import { store, newProject, newTrack, newMidiRegion, generatedRegion, regenerate, trackForPart, uid, barBeats, changeTimeSig, splitRegion } from './state.js';
 import { Engine, renderProject, songEnd, expandRegion, sourceSpb } from './engine/engine.js';
 import { getInstrument, isKit, loadBuffer } from './engine/instruments.js';
@@ -21,6 +23,8 @@ import { Editor, TOOLS } from './ui/editor.js';
 import { SmartControls } from './ui/smart.js';
 import { Library, LOOPS } from './ui/library.js';
 import { $, h, toast, modal, confirmDialog, contextMenu, canvas2d, palette, knob, promptNumber } from './ui/dom.js';
+
+const SONG_END_GRACE_MS = 300;
 
 const Tone = window.Tone;
 const TYPING_KEYS = ['a', 'w', 's', 'e', 'd', 'f', 't', 'g', 'y', 'h', 'u', 'j', 'k', 'o', 'l', 'p', ';', "'"];
@@ -45,7 +49,9 @@ class App {
     await this.engine.init(this.bootAudioMode, { sampleRate: this.bootSampleRate, outputDevice: this.settings.outputDevice || '' });
     this.arrange = new Arrange(this);
     this.editor = new Editor(this, $('#bottom-body'), $('#bottom-tools'));
+    this.tuner = new Tuner(this, $('#tuner'), $('#btn-tuner'));
     this.smart = new SmartControls(this, $('#bottom-body'), $('#bottom-tools'));
+    fillIcons();
     this.library = new Library(this, $('#library-body'));
     setupBackgroundDrop(this);
 
@@ -92,6 +98,7 @@ class App {
             await this.engine.useNativePlayback(true);
             const track = this.monitorTrack && store.track(this.monitorTrack);
             if (track) { this.monitorTrack = null; await this.toggleMonitor(track); }
+            if (this.tuner.on) await this.tuner.restart();
           } catch (err) {
             toast('Couldn\'t restart the low-latency engine: ' + err.message, 6000);
           }
@@ -140,6 +147,7 @@ class App {
   // Applies changed native settings, reopening the device if it's in use.
   async applyNativeAudio() {
     await window.host?.setSettings(this.settings);
+    if (this.tuner.on) await this.tuner.stop(); // the device is about to change under it
     const wasOpen = !!this.engine.native.device;
     const track = this.monitorTrack && store.track(this.monitorTrack);
     if (this.engine.nativePlayback) await this.engine.useNativePlayback(false);
@@ -273,11 +281,25 @@ class App {
     this.renderBottom();
   }
 
+  // Double-clicking a track or region: instruments open their notes, audio opens its controls.
+  // (Audio clips still have an editor: E, or right-click → Open in Editor.)
+  openTrack(track, regionId = null) {
+    if (track.type !== 'audio' && regionId) return this.openEditor(regionId);
+    store.ui.selectedTrack = track.id;
+    if (regionId) store.ui.selectedRegions = new Set([regionId]);
+    this.bottomMode = track.type === 'audio' ? 'smart' : 'editor';
+    this.renderBottom();
+  }
+
   tick() {
     const pos = this.engine.playing ? this.engine.position() : store.ui.playhead;
     if (this.engine.playing) {
       store.ui.playhead = pos;
       this.arrange.follow(pos);
+      this.checkSongEnd(pos);
+    } else {
+      this.beforeSongEnd = false;
+      this.songEndedAt = null;
     }
     this.arrange.setPlayhead(pos);
     if (this.recording && this.engine.playing) {
@@ -291,6 +313,7 @@ class App {
     if (store.project.tempoChanges?.length) this.showTempo();
     this.arrange.updateMeters();
     this.drawInputMeter();
+    this.tuner.update(performance.now());
     const ctx = canvas2d($('#master-meter'), 80, 8);
     const lvl = Math.max(0, Math.min(1, (this.engine.masterDb() + 48) / 48));
     ctx.fillStyle = palette().well;
@@ -301,6 +324,22 @@ class App {
   }
 
   // ------------------------------------------------------------ transport
+
+  // Playback stops by itself on reaching the end of the song and returns to the start. It keeps going
+  // while recording or cycling, and when it was started or moved past the end on purpose (to jam).
+  checkSongEnd(pos) {
+    if (!this.engine.rolling) return;
+    if (pos < songEnd(store.project)) {
+      this.beforeSongEnd = true;
+      this.songEndedAt = null;
+      return;
+    }
+    if (!this.beforeSongEnd || this.recording || store.project.cycle.on) return;
+    // The position runs slightly ahead of what's audible, so let the last moments play out.
+    this.songEndedAt ??= performance.now();
+    if (performance.now() - this.songEndedAt < SONG_END_GRACE_MS) return;
+    this.stop().then(() => this.rewind());
+  }
 
   async togglePlay() {
     if (this.engine.playing || this.recording) return this.stop();
@@ -326,6 +365,7 @@ class App {
   }
 
   seek(beats) {
+    this.beforeSongEnd = false;
     store.ui.playhead = Math.max(0, beats);
     this.engine.setCursor(store.ui.playhead);
     if (this.engine.playing) this.engine.setPosition(store.ui.playhead);
@@ -339,6 +379,7 @@ class App {
 
   async toggleRecord() {
     if (this.recording) return this.stop();
+    if (this.tuner.on) await this.tuner.stop(); // the native engine can't do both at once
     if (this.engine.playing) this.engine.stop();
     let track = store.selectedTrack;
     if (!track) {
@@ -765,9 +806,10 @@ class App {
         h('label', { class: 'field' }, h('span', {}, 'Plugin window size'), pluginScale,
           h('span', { class: 'settings-desc' }, 'If plugin windows look too small or blurry on a high-resolution screen, pick a size here. Applies the next time a plugin window opens.'))),
       section('About',
-        h('div', { class: 'settings-desc' }, 'Basement Band — free and open source (MIT). Sounds are CC0/CC-BY/GPL; see the credits.'),
+        h('div', { class: 'settings-desc' }, 'Basement Band is free and open source. The app is MIT licensed; bundled components and sounds keep their own open licenses.'),
         h('div', { class: 'row', style: { gap: '8px', marginTop: '8px' } },
-          h('button', { class: 'text', onclick: () => window.host?.openCredits() }, 'Sound credits'))),
+          h('button', { class: 'text', onclick: () => window.host?.openCredits() }, 'Sound credits'),
+          h('button', { class: 'text', onclick: () => window.host?.openLicenses() }, 'Licenses'))),
       h('div', { class: 'actions' }, h('button', { class: 'text accent', onclick: () => close() }, 'Done'))));
   }
 
@@ -1435,6 +1477,7 @@ class App {
       this.settings.countIn = this.countIn;
       window.host?.setSettings(this.settings);
     });
+    $('#btn-tuner').addEventListener('click', () => this.tuner.toggle());
     $('#btn-typing').addEventListener('click', () => this.toggleTyping());
     $('#btn-library').addEventListener('click', () => this.toggleLibrary());
     $('#btn-smart').addEventListener('click', () => this.setBottom('smart'));
@@ -1580,6 +1623,7 @@ class App {
             case 'r': this.toggleRecord(); break;
             case 'c': store.update(p => { p.cycle.on = !p.cycle.on; }); break;
             case 'k': this.toggleMetronome(); break;
+            case 't': this.tuner.toggle(); break;
             case 'e': this.setBottom('editor'); break;
             case 'b': this.setBottom('smart'); break;
             case 'y': this.toggleLibrary(); break;

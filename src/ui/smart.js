@@ -9,12 +9,70 @@ import { store, regenerate } from '../state.js';
 import { STYLES, PARTS, PART_LABELS } from '../music/band.js';
 import { getInstrument } from '../engine/instruments.js';
 import { parseProgression } from '../music/theory.js';
+import { icon } from './icons.js';
+
+// Which sections stay open when they don't all fit, most important first.
+const PANEL_PRIORITY = ['gen', 'amp', 'input', 'channel', 'eq', 'effect'];
 
 export class SmartControls {
   constructor(app, body, tools) {
     this.app = app;
     this.body = body;
     this.tools = tools;
+    // Reflow the sections when the window or pane changes size (the editor shares this pane).
+    new ResizeObserver(() => this.fitPanels()).observe(body);
+  }
+
+  // The user's own choices, kept between sessions: sections they closed, and the last one they opened.
+  get panelState() {
+    const s = this.app.settings;
+    if (!s.smartPanels) s.smartPanels = { closed: [], pinned: null };
+    return s.smartPanels;
+  }
+
+  togglePanel(id) {
+    const state = this.panelState;
+    const el = this.body.querySelector(`.panel[data-panel="${id}"]`);
+    if (el?.classList.contains('collapsed')) {
+      state.closed = state.closed.filter(x => x !== id);
+      state.pinned = id;
+    } else {
+      if (!state.closed.includes(id)) state.closed.push(id);
+      if (state.pinned === id) state.pinned = null;
+    }
+    window.host?.setSettings(this.app.settings);
+    this.fitPanels();
+  }
+
+  // A section that collapses to a thin labelled strip. `summary` says what's set while it's closed.
+  panel(id, title, summary, content, tools = null) {
+    return h('div', { class: 'panel', dataset: { panel: id } },
+      h('div', { class: 'panel-head', title: `Show or hide ${title}`, onclick: () => this.togglePanel(id) },
+        h('span', { class: 'panel-chevron' }, icon('down')),
+        h('h3', {}, title),
+        h('span', { class: 'panel-summary' }, summary),
+        tools ? h('span', { class: 'panel-tools', onclick: e => e.stopPropagation() }, tools) : null),
+      h('div', { class: 'panel-body' }, content));
+  }
+
+  // Opens what fits without sideways scrolling: closed sections stay closed, the last one opened
+  // stays open, and the rest open in priority order while there's room.
+  fitPanels() {
+    const smart = this.body.querySelector('.smart');
+    if (!smart || !smart.clientWidth) return;
+    const { closed, pinned } = this.panelState;
+    const panels = [...smart.querySelectorAll('.panel')];
+    const tips = [...smart.querySelectorAll('.smart-tip')];
+    const overflowing = () => smart.scrollWidth > smart.clientWidth + 1;
+    tips.forEach(t => t.classList.remove('hidden'));
+    panels.forEach(p => p.classList.toggle('collapsed', closed.includes(p.dataset.panel)));
+    if (overflowing()) tips.forEach(t => t.classList.add('hidden'));
+    const rank = id => (id === pinned ? -1 : PANEL_PRIORITY.indexOf(id));
+    const byLeastImportant = panels.filter(p => !p.classList.contains('collapsed')).sort((a, b) => rank(b.dataset.panel) - rank(a.dataset.panel));
+    for (const p of byLeastImportant.slice(0, -1)) {
+      if (!overflowing()) break;
+      p.classList.add('collapsed');
+    }
   }
 
   render() {
@@ -34,10 +92,9 @@ export class SmartControls {
     });
 
     const isPlugin = track.type !== 'audio' && getInstrument(track.instrument).type === 'plugin' && !getInstrument(track.instrument).missing;
-    const channel = h('div', {},
-      h('h3', {}, track.type === 'audio' ? 'Audio Track' : getInstrument(track.instrument).name),
+    const channel = this.panel('channel', track.type === 'audio' ? 'Audio Track' : getInstrument(track.instrument).name, `${(track.volume ?? 0).toFixed(1)} dB`, [
       isPlugin ? h('button', { class: 'text accent', style: { marginBottom: '10px' }, title: 'Open the plugin\'s own controls', onclick: () => this.app.openPluginWindow(track) }, '🎛️ Open Plugin Window') : null,
-      h('div', { class: 'knobs' },
+      h('div', { class: 'knobs channel-knobs' },
         k('Volume', 'volume', { min: -40, max: 6, center: -4, format: v => v.toFixed(1) + ' dB' }),
         k('Pan', 'pan', { min: -1, max: 1, center: 0, format: v => Math.abs(v) < 0.02 ? 'C' : (v < 0 ? 'L' : 'R') + Math.round(Math.abs(v) * 100) }),
         k('Tone', 'tone', { def: 1, center: 1 }),
@@ -45,22 +102,25 @@ export class SmartControls {
         k('Reverb', 'reverb', { center: 0.2 }),
         k('Echo', 'echo', { center: 0 }),
       ),
-    );
+    ]);
 
     const sync = () => this.app.engine.sync(store.project);
-    const sections = [channel, this.eqSection(track, live), fxPanel(() => track.fx, v => { track.fx = v; }, sync)];
+    const fxName = EFFECTS[track.fx?.type]?.name;
+    const effect = this.panel('effect', 'Effect', track.fx?.type && track.fx.type !== 'none' ? fxName : 'None', fxPanel(() => track.fx, v => { track.fx = v; }, sync, null));
+    const sections = [channel, this.eqSection(track, live), effect];
     const guitarish = track.type === 'audio' || ['Guitar', 'Bass'].includes(getInstrument(track.instrument).cat);
     if (guitarish) sections.unshift(this.ampSection(track, sync));
     if (track.type === 'audio') sections.unshift(this.inputSection(track));
     const region = this.selectedGenRegion(track);
-    if (region) sections.push(this.genControls(track, region));
+    if (region) sections.push(this.panel('gen', region.gen.part === 'drums' ? 'Drummer' : 'Session Player', STYLES[region.gen.style]?.name || '', this.genControls(track, region)));
     else if (track.type !== 'audio') {
-      sections.push(h('div', { class: 'lib-note', style: { maxWidth: '260px' } },
+      sections.push(h('div', { class: 'lib-note smart-tip', style: { maxWidth: '260px' } },
         track.type === 'drums'
           ? 'Tip: select a Drummer region to change its style, complexity and loudness here.'
           : 'Tip: pick a different sound for this track in the Library → Sounds tab.'));
     }
     this.body.replaceChildren(h('div', { class: 'smart' }, ...sections));
+    this.fitPanels();
   }
 
   // Bass / Mid / Treble with a response curve that redraws as you turn the knobs.
@@ -79,9 +139,9 @@ export class SmartControls {
       onclick: () => store.update(() => { EQ_BANDS.forEach(b => { track[b.key] = 0; }); }),
     }, 'Flat');
     requestAnimationFrame(draw);
-    return h('div', {},
-      h('h3', { class: 'eq-title' }, 'EQ', flat),
-      h('div', { class: 'eq-body' }, curve, h('div', { class: 'knobs' }, ...knobs)));
+    const isFlat = EQ_BANDS.every(b => !track[b.key]);
+    return this.panel('eq', 'EQ', isFlat ? 'Flat' : 'On',
+      h('div', { class: 'eq-body' }, curve, h('div', { class: 'knobs' }, ...knobs)), flat);
   }
 
   // Interface input: device, which input jack, monitoring, level and latency.
@@ -103,18 +163,17 @@ export class SmartControls {
     const channels = h('select', { class: 'wide-select', onchange: e => app.setInputChannel(track, e.target.value) },
       [['left', 'Input 1 (mono)'], ['right', 'Input 2 (mono)'], ['stereo', native ? 'Inputs 1+2 (mixed to mono)' : 'Inputs 1+2 (stereo)']].map(([v, l]) => h('option', { value: v, selected: v === channel }, l)));
     const info = app.engine.inputInfo();
-    return h('div', { class: 'input-panel' },
-      h('h3', {}, 'Input'),
+    return this.panel('input', 'Input', monitoring ? 'Monitoring' : '', h('div', { class: 'input-panel' },
       h('label', { class: 'field' }, h('span', {}, 'Interface'), device),
       h('label', { class: 'field' }, h('span', {}, 'Plugged into'), channels),
       h('div', { class: 'monitor-row' },
-        h('button', { class: 'text' + (monitoring ? ' accent' : ''), onclick: () => app.toggleMonitor(track) }, monitoring ? '🎧 Monitoring' : '🎧 Monitor'),
+        h('button', { class: 'text with-icon' + (monitoring ? ' accent' : ''), onclick: () => app.toggleMonitor(track) }, icon('headphones'), monitoring ? 'Monitoring' : 'Monitor'),
         h('canvas', { id: 'input-meter', width: 120, height: 10, title: 'Input level — keep the peaks out of the red' })),
       native ? null : h('div', { class: 'monitor-row' },
         h('span', { class: 'settings-desc' }, `Audio mode: ${{ low: 'Low latency', balanced: 'Balanced', stable: 'Stable' }[app.bootAudioMode] || 'Balanced'}`),
         h('button', { class: 'text small-text', onclick: () => app.openSettings() }, 'Change…')),
       h('div', { class: 'lib-note', style: { padding: '6px 0 0' } },
-        monitoring && info.open ? `${info.label || 'Input'} · about ${info.monitorLatencyMs} ms monitoring latency` : 'Use headphones while monitoring. Recordings are kept clean, so you can change the amp later.'));
+        monitoring && info.open ? `${info.label || 'Input'} · about ${info.monitorLatencyMs} ms monitoring latency` : 'Use headphones while monitoring. Recordings are kept clean, so you can change the amp later.')));
   }
 
   ampSection(track, sync) {
@@ -149,10 +208,9 @@ export class SmartControls {
       onInput: v => { track.amp = { ...track.amp, [k.key]: v }; sync(); },
       onCommit: () => store.endGesture(),
     })) : [];
-    return h('div', { class: 'amp-panel' },
-      h('h3', {}, 'Amp'),
+    return this.panel('amp', 'Amp', on ? AMP_MODELS[amp.model]?.name || '' : 'Off', h('div', { class: 'amp-panel' },
       h('div', { class: 'amp-top' }, model, cab),
-      on ? h('div', { class: 'knobs amp-knobs' }, ...knobs) : h('div', { class: 'lib-note' }, 'Pick Clean, Crunch, Lead or Bass to run this track through an amp.'));
+      on ? h('div', { class: 'knobs amp-knobs' }, ...knobs) : h('div', { class: 'lib-note' }, 'Pick Clean, Crunch, Lead or Bass to run this track through an amp.')));
   }
 
   // Effects on the whole mix (playback and export).
@@ -228,10 +286,10 @@ export class SmartControls {
         h('select', { onchange: e => apply(() => { gen.part = e.target.value; }) },
           PARTS.filter(p => p !== 'drums').map(p => h('option', { value: p, selected: p === gen.part }, PART_LABELS[p])))));
     }
-    fields.push(h('button', { class: 'text', onclick: () => apply(() => { gen.seed = Math.floor(Math.random() * 1e6); }) }, '🎲 New Variation'));
+    fields.push(h('button', { class: 'text with-icon', onclick: () => apply(() => { gen.seed = Math.floor(Math.random() * 1e6); }) }, icon('dice'), 'New Variation'));
 
     return h('div', { style: { display: 'flex', gap: '24px' } },
-      h('div', {}, h('h3', {}, gen.part === 'drums' ? 'Drummer' : 'Session Player'), xy),
+      xy,
       h('div', { style: { width: '260px' } }, h('h3', {}, region.name || 'Region'), ...fields),
     );
   }
@@ -284,7 +342,7 @@ export function fxPanel(get, set, sync, title = 'Effect') {
     onCommit: () => store.endGesture(),
   }));
   return h('div', { class: 'fx-panel' },
-    h('h3', {}, title),
+    title ? h('h3', {}, title) : null,
     picker,
     knobs.length ? h('div', { class: 'knobs', style: { marginTop: '12px' } }, ...knobs) : h('div', { class: 'lib-note' }, 'Pick Vinyl, Tape, Radio or Lo-Fi.'));
 }

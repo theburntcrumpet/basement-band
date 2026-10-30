@@ -527,6 +527,49 @@ module.exports = async function native(win, app) {
     if (diff > 0.5) return 'export level differs by ' + diff.toFixed(2) + ' dB';
     return 'ok kicks exactly 24000 frames apart, meters and playhead follow, live note in ' + latencyMs.toFixed(1) + ' ms (128-sample buffer), export matches within ' + diff.toFixed(2) + ' dB';`);
 
+  await check('native playback stops at the end of the song and returns to the start', `
+    if (!app.engine.nativePlayback) return 'native playback not on';
+    if (app.engine.playing) await app.stop();
+    const end = Math.max(...store.project.tracks.flatMap(t => t.regions.map(r => r.start + r.length)));
+    app.seek(end - 1);
+    await app.togglePlay();
+    await new Promise(r => setTimeout(r, 200));
+    const midway = app.engine.playing;
+    await new Promise(r => setTimeout(r, 1200));
+    return midway && !app.engine.playing && store.ui.playhead === 0 ? 'ok' : JSON.stringify({ midway, playing: app.engine.playing, at: store.ui.playhead, end });`);
+
+  await check('the tuner hears the native input, and recording still works afterwards', `
+    if (!app.engine.nativePlayback) return 'native playback not on';
+    await app.tuner.start();
+    if (!app.engine.tuner) return 'not listening';
+    // The virtual interface's input is a click once a second, which is enough to prove audio arrives.
+    let peak = 0, rate = 0;
+    for (let i = 0; i < 30 && peak < 0.3; i++) {
+      await new Promise(r => setTimeout(r, 50));
+      const input = app.engine.tunerInput();
+      rate = input.rate;
+      peak = Math.max(peak, input.data.reduce((m, v) => Math.max(m, Math.abs(v)), 0));
+    }
+    if (peak < 0.3) return 'no input reached the tuner (peak ' + peak + ')';
+    const t = app.addTrack('audio', null, 'After tuner');
+    store.ui.selectedTrack = t.id;
+    app.countIn = false;
+    app.seek(0);
+    await app.toggleRecord();
+    const closed = !app.tuner.on && !app.engine.tuner;
+    await new Promise(r => setTimeout(r, 1500));
+    await app.stop();
+    const take = t.regions[0];
+    // A helper crash mustn't leave the tuner deaf.
+    await app.tuner.start();
+    window.host.plugins.send({ cmd: 'test:crash' });
+    await new Promise(r => setTimeout(r, 3500));
+    const tapped = !!app.engine.native.tap;
+    await app.tuner.stop();
+    if (!tapped) return 'the tuner stopped listening after a helper crash';
+    await new Promise(r => setTimeout(r, 300));
+    return closed && take && rate > 0 ? 'ok peak ' + peak.toFixed(2) + ' at ' + rate + ' Hz, then a take of ' + take.length.toFixed(2) + ' beats' : JSON.stringify({ closed, take: !!take });`);
+
   await check('the native engine recovers from a helper crash', `
     if (!app.engine.nativePlayback) return 'native playback not on';
     const { bridge } = await import('./engine/plugins.js');

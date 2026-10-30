@@ -2,7 +2,7 @@
 // createInstrument() builds in whatever Tone context is current, so the same code serves
 // live playback and offline export.
 
-import { INSTRUMENT_NOTES, PIANO_NOTES, VELOCITY_LAYERS, TR808_NAMES, FREESOUND_FX, SONICPI_FX } from './sample-manifest.js';
+import { INSTRUMENT_NOTES, PIANO_NOTES, VELOCITY_LAYERS, TR808_NAMES, FREESOUND_FX, SONICPI_FX, CC0_INSTRUMENTS, CC0_PERCUSSION, cc0Samples } from './sample-manifest.js';
 import { noteToMidi, midiToNote } from '../music/theory.js';
 import { getUserDef, loadUserInstrument, USER_CAT } from './user-instruments.js';
 import { MultiSampler } from './multisampler.js';
@@ -11,7 +11,8 @@ import { getPluginDef } from './plugins.js';
 const Tone = window.Tone;
 const SAMPLE_ROOT = 'samples/';
 
-const notes = dir => (dir === 'piano' ? PIANO_NOTES : INSTRUMENT_NOTES[dir].split(' '));
+const notes = dir => (dir === 'piano' ? PIANO_NOTES : CC0_INSTRUMENTS[dir] ? cc0Samples(dir).map(s => s.name) : INSTRUMENT_NOTES[dir].split(' '));
+const sampleFile = (dir, name) => `${SAMPLE_ROOT}${dir}/${name}.${CC0_INSTRUMENTS[dir] ? 'flac' : 'mp3'}`;
 
 // Sampled source: a folder of notes, optionally limited to a midi range when layering folders.
 const src = (dir, lo = 0, hi = 127) => ({ dir, lo, hi });
@@ -26,11 +27,20 @@ export const INSTRUMENTS = [
   { id: 'church-organ', name: 'Pipe Organ', cat: 'Keyboards', type: 'sampler', sources: [src('organ')], release: 0.6, volume: -5 },
   { id: 'harmonium', name: 'Harmonium', cat: 'Keyboards', type: 'sampler', sources: [src('harmonium')], release: 0.4, volume: -5 },
   { id: 'clav', name: 'Funky Clav', cat: 'Keyboards', type: 'synth', preset: 'clav', volume: -9 },
+  { id: 'harpsichord', name: 'Harpsichord', cat: 'Keyboards', type: 'sampler', sources: [src('harpsichord')], release: 0.25, volume: 11, tags: 'baroque french' },
+  { id: 'harpsichord-flemish', name: 'Flemish Harpsichord', cat: 'Keyboards', type: 'sampler', sources: [src('harpsichord-flemish')], release: 0.25, volume: 12.5, tags: 'baroque bright' },
+  { id: 'upright-piano', name: 'Upright Piano', cat: 'Keyboards', type: 'sampler', sources: [src('upright-piano')], release: 0.6, volume: 12.5, tags: 'honky tonk old' },
+  { id: 'fm-piano', name: 'FM Piano', cat: 'Keyboards', type: 'sampler', sources: [src('fm-piano')], release: 0.4, volume: 9, tags: 'tx81z dx 80s electric' },
+  { id: 'clavisynth', name: 'Clavisynth', cat: 'Keyboards', type: 'sampler', sources: [src('clavisynth')], release: 0.2, volume: 12, tags: 'tx81z fm clavinet 80s' },
   // Bass
   { id: 'electric-bass', name: 'Electric Bass', cat: 'Bass', type: 'sampler', sources: [src('bass-electric')], release: 0.15, volume: -1 },
   { id: 'upright-bass', name: 'Upright Bass', cat: 'Bass', type: 'sampler', sources: [src('contrabass')], release: 0.25, volume: -2.5 },
+  { id: 'pizz-bass', name: 'Pizzicato Double Bass', cat: 'Bass', type: 'sampler', sources: [src('contrabass-pizz')], release: 0.2, volume: 22, tags: 'orchestral plucked upright jazz' },
   { id: 'synth-bass', name: 'Analog Bass', cat: 'Bass', type: 'synth', preset: 'synthBass', volume: -5.5 },
   { id: 'sub-bass', name: 'Sub Bass', cat: 'Bass', type: 'synth', preset: 'subBass', volume: -10.5 },
+  { id: 'fm-bass', name: 'FM Bass', cat: 'Bass', type: 'synth', preset: 'fmBass', volume: -1, tags: 'dx 80s slap' },
+  { id: 'acid-bass', name: 'Acid Bass', cat: 'Bass', type: 'synth', preset: 'acidBass', volume: -9.5, tags: '303 squelch techno' },
+  { id: 'reese-bass', name: 'Reese Bass', cat: 'Bass', type: 'synth', preset: 'reeseBass', volume: -6, tags: 'dnb detuned growl' },
   // Guitar
   { id: 'acoustic-guitar', name: 'Acoustic Guitar', cat: 'Guitar', type: 'sampler', sources: [src('guitar-acoustic')], release: 0.6, volume: -1.5 },
   { id: 'nylon-guitar', name: 'Nylon Guitar', cat: 'Guitar', type: 'sampler', sources: [src('guitar-nylon')], release: 0.6, volume: -3 },
@@ -41,21 +51,52 @@ export const INSTRUMENTS = [
   { id: 'violin', name: 'Violin', cat: 'Strings', type: 'sampler', sources: [src('violin')], attack: 0.03, release: 0.6, volume: -5 },
   { id: 'cello', name: 'Cello', cat: 'Strings', type: 'sampler', sources: [src('cello')], attack: 0.03, release: 0.6, volume: -6 },
   { id: 'harp', name: 'Harp', cat: 'Strings', type: 'sampler', sources: [src('harp')], release: 1.5, volume: -5.5 },
+  { id: 'chamber-strings', name: 'Chamber Strings', cat: 'Strings', type: 'sampler', sources: [src('contrabass-arco', 0, 38), src('cello-section', 39, 54), src('viola-section', 55, 64), src('violin-section', 65)], attack: 0.06, release: 0.7, volume: 2, tags: 'orchestra ensemble section arco' },
+  { id: 'violin-section', name: 'Violin Section', cat: 'Strings', type: 'sampler', sources: [src('violin-section')], attack: 0.05, release: 0.6, volume: 13.5, tags: 'orchestra ensemble arco' },
+  { id: 'viola-section', name: 'Viola Section', cat: 'Strings', type: 'sampler', sources: [src('viola-section')], attack: 0.05, release: 0.6, volume: 0.5, tags: 'orchestra ensemble arco' },
+  { id: 'cello-section', name: 'Cello Section', cat: 'Strings', type: 'sampler', sources: [src('cello-section')], attack: 0.05, release: 0.6, volume: -1, tags: 'orchestra ensemble arco' },
+  { id: 'contrabass', name: 'Double Bass (Bowed)', cat: 'Strings', type: 'sampler', sources: [src('contrabass-arco')], attack: 0.05, release: 0.5, volume: 2.5, tags: 'orchestra arco contrabass' },
+  { id: 'pizz-strings', name: 'Pizzicato Strings', cat: 'Strings', type: 'sampler', sources: [src('contrabass-pizz', 0, 38), src('cello-pizz', 39, 54), src('viola-pizz', 55, 64), src('violin-pizz', 65)], release: 0.3, volume: 7.5, tags: 'orchestra plucked section' },
+  { id: 'spiccato-strings', name: 'Staccato Strings', cat: 'Strings', type: 'sampler', sources: [src('cello-spic', 0, 54), src('viola-spic', 55, 64), src('violin-spic', 65)], release: 0.15, volume: 13, tags: 'orchestra spiccato short section' },
+  { id: 'tremolo-strings', name: 'Tremolo Strings', cat: 'Strings', type: 'sampler', sources: [src('cello-trem', 0, 54), src('viola-trem', 55, 64), src('violin-trem', 65)], attack: 0.04, release: 0.5, volume: 6.5, tags: 'orchestra tense suspense section' },
+  { id: 'folk-harp', name: 'Folk Harp', cat: 'Strings', type: 'sampler', sources: [src('folk-harp')], release: 1.2, volume: 19, tags: 'celtic irish plucked' },
+  { id: 'dan-tranh', name: 'Dan Tranh', cat: 'Strings', type: 'sampler', sources: [src('dan-tranh')], release: 0.8, volume: 20, tags: 'vietnamese zither world plucked' },
+  { id: 'psaltery', name: 'Psaltery', cat: 'Strings', type: 'sampler', sources: [src('psaltery')], release: 0.8, volume: 17.5, tags: 'medieval zither plucked' },
   // Brass
   { id: 'brass', name: 'Brass Section', cat: 'Brass', type: 'sampler', sources: [src('tuba', 0, 40), src('trombone', 41, 57), src('trumpet', 58)], release: 0.3, volume: -5 },
   { id: 'trumpet', name: 'Trumpet', cat: 'Brass', type: 'sampler', sources: [src('trumpet')], release: 0.3, volume: -6 },
   { id: 'trombone', name: 'Trombone', cat: 'Brass', type: 'sampler', sources: [src('trombone')], release: 0.3, volume: -7 },
   { id: 'french-horn', name: 'French Horn', cat: 'Brass', type: 'sampler', sources: [src('french-horn')], release: 0.5, volume: -7.5 },
   { id: 'tuba', name: 'Tuba', cat: 'Brass', type: 'sampler', sources: [src('tuba')], release: 0.3, volume: -7 },
+  { id: 'warm-brass', name: 'Warm Brass', cat: 'Brass', type: 'sampler', sources: [src('tuba', 0, 40), src('trombone-vib', 41, 52), src('french-horn', 53)], attack: 0.03, release: 0.4, volume: -4, tags: 'section horn orchestra' },
+  { id: 'brass-stabs', name: 'Brass Stabs', cat: 'Brass', type: 'sampler', sources: [src('tuba-stac', 0, 40), src('trombone-stac', 41, 57), src('trumpet-stac', 58)], release: 0.15, volume: 10.5, tags: 'section staccato short funk' },
+  { id: 'trumpet-vib', name: 'Vibrato Trumpet', cat: 'Brass', type: 'sampler', sources: [src('trumpet-vib')], release: 0.3, volume: 18.5, tags: 'solo expressive' },
+  { id: 'trumpet-harmon', name: 'Harmon Mute Trumpet', cat: 'Brass', type: 'sampler', sources: [src('trumpet-harmon')], release: 0.3, volume: 29, tags: 'muted jazz' },
+  { id: 'trumpet-straight', name: 'Straight Mute Trumpet', cat: 'Brass', type: 'sampler', sources: [src('trumpet-straight')], release: 0.3, volume: 21.5, tags: 'muted' },
+  { id: 'trombone-vib', name: 'Vibrato Trombone', cat: 'Brass', type: 'sampler', sources: [src('trombone-vib')], release: 0.3, volume: 18, tags: 'solo jazz expressive' },
+  { id: 'horn-mute', name: 'Muted French Horn', cat: 'Brass', type: 'sampler', sources: [src('horn-mute')], release: 0.4, volume: 4, tags: 'orchestra' },
+  { id: 'horn-stac', name: 'Horn Stabs', cat: 'Brass', type: 'sampler', sources: [src('horn-stac')], release: 0.15, volume: 1.5, tags: 'french staccato short orchestra' },
   // Woodwinds
   { id: 'saxophone', name: 'Tenor Sax', cat: 'Woodwinds', type: 'sampler', sources: [src('saxophone')], release: 0.3, volume: -7 },
   { id: 'flute', name: 'Flute', cat: 'Woodwinds', type: 'sampler', sources: [src('flute')], release: 0.4, volume: -4 },
   { id: 'clarinet', name: 'Clarinet', cat: 'Woodwinds', type: 'sampler', sources: [src('clarinet')], release: 0.3, volume: -7 },
   { id: 'bassoon', name: 'Bassoon', cat: 'Woodwinds', type: 'sampler', sources: [src('bassoon')], release: 0.3, volume: -5 },
+  { id: 'oboe', name: 'Oboe', cat: 'Woodwinds', type: 'sampler', sources: [src('oboe')], attack: 0.02, release: 0.3, volume: 14, tags: 'orchestra reed' },
+  { id: 'piccolo', name: 'Piccolo', cat: 'Woodwinds', type: 'sampler', sources: [src('piccolo')], release: 0.25, volume: 14, tags: 'orchestra high flute' },
+  { id: 'recorder', name: 'Recorder', cat: 'Woodwinds', type: 'sampler', sources: [src('recorder')], release: 0.2, volume: 23, tags: 'baroque flute' },
+  { id: 'ocarina', name: 'Ocarina', cat: 'Woodwinds', type: 'sampler', sources: [src('ocarina')], release: 0.2, volume: 2, tags: 'flute folk world' },
+  { id: 'saxello', name: 'Soprano Sax', cat: 'Woodwinds', type: 'sampler', sources: [src('saxello')], release: 0.3, volume: 0, tags: 'saxello saxophone jazz' },
+  { id: 'harmonica', name: 'Harmonica', cat: 'Woodwinds', type: 'sampler', sources: [src('harmonica')], release: 0.2, volume: -1, tags: 'blues folk country mouth organ' },
   // Mallets
   { id: 'xylophone', name: 'Xylophone', cat: 'Mallets', type: 'sampler', sources: [src('xylophone')], release: 1, volume: -2 },
   { id: 'vibes', name: 'Vibraphone', cat: 'Mallets', type: 'synth', preset: 'vibes', volume: 7 },
   { id: 'bells', name: 'Glass Bells', cat: 'Mallets', type: 'synth', preset: 'bells', volume: 0 },
+  { id: 'marimba', name: 'Marimba', cat: 'Mallets', type: 'sampler', sources: [src('marimba')], release: 0.8, volume: 17, tags: 'percussion wood' },
+  { id: 'concert-vibes', name: 'Concert Vibraphone', cat: 'Mallets', type: 'sampler', sources: [src('vibraphone')], release: 1, volume: 5.5, tags: 'percussion jazz soft mallets' },
+  { id: 'glockenspiel', name: 'Glockenspiel', cat: 'Mallets', type: 'sampler', sources: [src('glockenspiel')], release: 1, volume: 23.5, tags: 'percussion bells celesta' },
+  { id: 'tubular-bells', name: 'Tubular Bells', cat: 'Mallets', type: 'sampler', sources: [src('tubular-bells')], release: 1.5, volume: 4, tags: 'percussion chimes church orchestra' },
+  { id: 'hand-chimes', name: 'Hand Chimes', cat: 'Mallets', type: 'sampler', sources: [src('hand-chimes')], release: 1.2, volume: 4.5, tags: 'percussion bells choir' },
+  { id: 'kalimba', name: 'Kalimba', cat: 'Mallets', type: 'sampler', sources: [src('kalimba')], release: 0.8, volume: 12, tags: 'thumb piano mbira world plucked' },
   // Synth
   { id: 'warm-pad', name: 'Warm Pad', cat: 'Synth', type: 'synth', preset: 'warmPad', volume: -5.5 },
   { id: 'glass-pad', name: 'Dream Pad', cat: 'Synth', type: 'synth', preset: 'glassPad', volume: -1 },
@@ -63,6 +104,17 @@ export const INSTRUMENTS = [
   { id: 'square-lead', name: 'Square Lead', cat: 'Synth', type: 'synth', preset: 'squareLead', volume: -15.5 },
   { id: 'pluck', name: 'Pluck', cat: 'Synth', type: 'synth', preset: 'pluck', volume: 4 },
   { id: 'chip', name: '8-Bit', cat: 'Synth', type: 'synth', preset: 'chip', volume: -12 },
+  { id: 'poly-synth', name: 'Poly Synth', cat: 'Synth', type: 'synth', preset: 'polySynth', volume: -3, tags: 'analog juno 80s chords keys' },
+  { id: 'super-saw', name: 'Super Saw', cat: 'Synth', type: 'synth', preset: 'superSaw', volume: -4, tags: 'trance edm lead big' },
+  { id: 'house-stab', name: 'House Stab', cat: 'Synth', type: 'synth', preset: 'houseStab', volume: 4, tags: 'chord short dance' },
+  { id: 'synth-brass', name: 'Synth Brass', cat: 'Synth', type: 'synth', preset: 'synthBrass', volume: -3.5, tags: '80s analog horns' },
+  { id: 'string-machine', name: 'String Machine', cat: 'Synth', type: 'synth', preset: 'stringMachine', volume: -4.5, tags: 'solina analog 70s pad ensemble' },
+  { id: 'sweep-pad', name: 'Sweep Pad', cat: 'Synth', type: 'synth', preset: 'sweepPad', volume: -1, tags: 'filter ambient evolving' },
+  { id: 'choir-pad', name: 'Choir Pad', cat: 'Synth', type: 'synth', preset: 'choirPad', volume: -4, tags: 'vocal voices aah ambient' },
+  { id: 'hollow-pad', name: 'Hollow Pad', cat: 'Synth', type: 'synth', preset: 'hollowPad', volume: -3.5, tags: 'ambient soft airy' },
+  { id: 'sine-lead', name: 'Sine Lead', cat: 'Synth', type: 'synth', preset: 'sineLead', volume: -8, tags: 'whistle soft theremin flute' },
+  { id: 'bell-pluck', name: 'Bell Pluck', cat: 'Synth', type: 'synth', preset: 'bellPluck', volume: 2.5, tags: 'fm arp mallet digital' },
+  { id: 'music-box', name: 'Music Box', cat: 'Synth', type: 'synth', preset: 'musicBox', volume: 1.5, tags: 'fm bells lullaby toy' },
   // Drum kits
   { id: 'kit-rock', name: 'Rock Kit', cat: 'Drum Kits', type: 'kit', kit: 'rock', volume: -2 },
   { id: 'kit-lofi', name: 'Lo-Fi Kit', cat: 'Drum Kits', type: 'kit', kit: 'rock', fx: 'lofi', volume: -1 },
@@ -112,11 +164,11 @@ export function kitPieces(id) {
 }
 
 // Individual one-shots for the sample browser.
-const FX_GROUPS = ['Whooshes', 'Hits & Drops', 'Waves', 'Wind', 'Rain & Thunder', 'Nature', 'Crowd', 'Fire & Vinyl', 'City', 'Drones & Pads'];
+const FX_GROUPS = ['Percussion', 'Whooshes', 'Hits & Drops', 'Waves', 'Wind', 'Rain & Thunder', 'Nature', 'Crowd', 'Fire & Vinyl', 'City', 'Drones & Pads'];
 
 export function builtinSamples() {
   const out = [];
-  const fx = [...FREESOUND_FX, ...SONICPI_FX];
+  const fx = [...CC0_PERCUSSION.map(p => ({ ...p, author: 'Versilian Studios' })), ...FREESOUND_FX, ...SONICPI_FX];
   for (const group of FX_GROUPS) {
     for (const s of fx.filter(x => x.group === group)) out.push({ group, name: s.name, url: SAMPLE_ROOT + s.file, credit: s.author });
   }
@@ -154,7 +206,7 @@ export async function loadInstrumentBuffers(id) {
       for (const name of notes(s.dir)) {
         const midi = noteToMidi(name);
         if (midi < s.lo || midi > s.hi) continue;
-        entries.push([midi, `${SAMPLE_ROOT}${s.dir}/${name}.mp3`]);
+        entries.push([midi, sampleFile(s.dir, name)]);
       }
     }
     const loaded = await Promise.all(entries.map(([, url]) => loadBuffer(url)));
@@ -281,6 +333,124 @@ const SYNTHS = {
     const synth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'square' },
       envelope: { attack: 0.001, decay: 0.12, sustain: 0.5, release: 0.05 },
+    });
+    return [synth];
+  },
+  fmBass: () => {
+    const synth = new Tone.PolySynth(Tone.FMSynth, {
+      harmonicity: 1, modulationIndex: 3.5,
+      envelope: { attack: 0.005, decay: 0.5, sustain: 0.5, release: 0.12 },
+      modulationEnvelope: { attack: 0.005, decay: 0.18, sustain: 0.1, release: 0.1 },
+    });
+    return [synth];
+  },
+  acidBass: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'sawtooth' },
+      filter: { type: 'lowpass', rolloff: -24, Q: 9 },
+      filterEnvelope: { attack: 0.002, decay: 0.2, sustain: 0.05, release: 0.1, baseFrequency: 130, octaves: 4.5 },
+      envelope: { attack: 0.002, decay: 0.3, sustain: 0.6, release: 0.08 },
+    });
+    return [synth, new Tone.Distortion({ distortion: 0.3, wet: 0.4 })];
+  },
+  reeseBass: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'fatsawtooth', count: 3, spread: 32 },
+      filter: { type: 'lowpass', rolloff: -24, Q: 1 },
+      filterEnvelope: { attack: 0.01, decay: 0.5, sustain: 0.7, release: 0.2, baseFrequency: 180, octaves: 2 },
+      envelope: { attack: 0.006, decay: 0.3, sustain: 0.9, release: 0.15 },
+    });
+    return [synth, new Tone.Distortion({ distortion: 0.2, wet: 0.3 })];
+  },
+  polySynth: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'fatsawtooth', count: 2, spread: 14 },
+      filter: { type: 'lowpass', rolloff: -24, Q: 1 },
+      filterEnvelope: { attack: 0.005, decay: 0.5, sustain: 0.35, release: 0.5, baseFrequency: 450, octaves: 3 },
+      envelope: { attack: 0.008, decay: 0.4, sustain: 0.7, release: 0.5 },
+    });
+    return [synth, new Tone.Chorus(0.8, 3, 0.5).start()];
+  },
+  superSaw: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'fatsawtooth', count: 5, spread: 36 },
+      filter: { type: 'lowpass', rolloff: -12, Q: 0.7 },
+      filterEnvelope: { attack: 0.01, decay: 0.4, sustain: 0.8, release: 0.5, baseFrequency: 1800, octaves: 2 },
+      envelope: { attack: 0.01, decay: 0.2, sustain: 0.85, release: 0.45 },
+    });
+    return [synth, new Tone.Chorus(1.2, 2.5, 0.4).start(), new Tone.FeedbackDelay({ delayTime: 0.28, feedback: 0.25, wet: 0.15 })];
+  },
+  houseStab: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'fatsawtooth', count: 3, spread: 18 },
+      filter: { type: 'lowpass', rolloff: -24, Q: 2 },
+      filterEnvelope: { attack: 0.002, decay: 0.16, sustain: 0.05, release: 0.15, baseFrequency: 500, octaves: 3.4 },
+      envelope: { attack: 0.002, decay: 0.28, sustain: 0, release: 0.12 },
+    });
+    return [synth, new Tone.FeedbackDelay({ delayTime: 0.33, feedback: 0.3, wet: 0.22 })];
+  },
+  synthBrass: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'fatsawtooth', count: 2, spread: 10 },
+      filter: { type: 'lowpass', rolloff: -24, Q: 0.8 },
+      filterEnvelope: { attack: 0.07, decay: 0.3, sustain: 0.6, release: 0.25, baseFrequency: 420, octaves: 2.8 },
+      envelope: { attack: 0.03, decay: 0.2, sustain: 0.85, release: 0.2 },
+    });
+    return [synth, new Tone.Chorus(0.9, 2, 0.3).start()];
+  },
+  stringMachine: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'fatsawtooth', count: 3, spread: 16 },
+      filter: { type: 'lowpass', rolloff: -12, Q: 0.5 },
+      filterEnvelope: { attack: 0.3, decay: 0.5, sustain: 1, release: 1, baseFrequency: 2600, octaves: 0 },
+      envelope: { attack: 0.22, decay: 0.3, sustain: 0.9, release: 0.9 },
+    });
+    return [synth, new Tone.Chorus(3.2, 5, 0.75).start(), new Tone.Filter(180, 'highpass')];
+  },
+  sweepPad: () => {
+    const synth = new Tone.PolySynth(Tone.MonoSynth, {
+      oscillator: { type: 'fatsawtooth', count: 3, spread: 22 },
+      filter: { type: 'lowpass', rolloff: -24, Q: 3 },
+      filterEnvelope: { attack: 3.5, decay: 3, sustain: 0.3, release: 3, baseFrequency: 160, octaves: 4.2 },
+      envelope: { attack: 0.8, decay: 1, sustain: 0.85, release: 2.6 },
+    });
+    return [synth, new Tone.Chorus(0.3, 4.5, 0.6).start()];
+  },
+  choirPad: () => {
+    // Partials shaped like an open "aah" vowel.
+    const synth = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'custom', partials: [0.7, 0.5, 0.35, 0.3, 0.42, 0.5, 0.34, 0.14, 0.07, 0.05, 0.08, 0.05] },
+      envelope: { attack: 0.5, decay: 0.3, sustain: 0.9, release: 1.5 },
+    });
+    return [synth, new Tone.Vibrato(4.8, 0.05), new Tone.Chorus(0.7, 4, 0.7).start()];
+  },
+  hollowPad: () => {
+    const synth = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'fattriangle', count: 3, spread: 18 },
+      envelope: { attack: 0.8, decay: 0.5, sustain: 0.8, release: 2.2 },
+    });
+    return [synth, new Tone.Chorus(0.5, 3.5, 0.6).start(), new Tone.FeedbackDelay({ delayTime: 0.5, feedback: 0.3, wet: 0.2 })];
+  },
+  sineLead: () => {
+    const synth = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'sine' },
+      envelope: { attack: 0.03, decay: 0.1, sustain: 0.9, release: 0.25 },
+    });
+    return [synth, new Tone.Vibrato(5.2, 0.05)];
+  },
+  bellPluck: () => {
+    const synth = new Tone.PolySynth(Tone.FMSynth, {
+      harmonicity: 3, modulationIndex: 4,
+      envelope: { attack: 0.001, decay: 0.7, sustain: 0, release: 0.5 },
+      modulationEnvelope: { attack: 0.001, decay: 0.25, sustain: 0, release: 0.2 },
+    });
+    return [synth, new Tone.FeedbackDelay({ delayTime: 0.27, feedback: 0.25, wet: 0.2 })];
+  },
+  musicBox: () => {
+    const synth = new Tone.PolySynth(Tone.FMSynth, {
+      harmonicity: 7, modulationIndex: 2.2,
+      envelope: { attack: 0.001, decay: 1.6, sustain: 0, release: 1.2 },
+      modulationEnvelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.1 },
     });
     return [synth];
   },

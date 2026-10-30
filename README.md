@@ -22,18 +22,20 @@ open it and start making music.
   grooves to the meter, and the metronome, count-in, ruler and editors follow it. Changing the
   meter keeps regions on their bars and rewrites band parts to fit.
 - **Drummer**: a drum track you steer with a Simple↔Complex / Soft↔Loud pad, with automatic fills.
-- **40 instruments**: a Salamander grand piano, electric and upright bass, acoustic, nylon, clean and
-  crunch guitars, a string section, brass, woodwinds, harp, mallets, organs and synths.
-  There are 4 drum kits: acoustic rock (5 velocity layers), lo-fi, 808 and electro.
+- **91 instruments**: a Salamander grand piano and upright, harpsichords, electric and upright bass,
+  acoustic, nylon, clean and crunch guitars, string sections (bowed, pizzicato, staccato, tremolo),
+  solo and muted brass, brass stabs, woodwinds, harps, mallets, organs and 17 synths.
+  There are 4 drum kits: acoustic rock (5 velocity layers), lo-fi, 808 and electro. Search them all
+  by name, family or feel ("baroque", "muted", "80s") at the top of Sounds.
 - **My Instruments**: import SoundFonts (.sf2), SFZ instruments, or a folder of samples (named by
   note, like `C4.wav`, or drum hits like `kick.wav`). Every SoundFont preset (including GM drum kits
   in bank 128) becomes an instrument. Drag .sf2/.sfz files onto the window to add them.
 - **Loops**: about 80 MIDI loops. They follow your song's key and tempo, like Apple Loops.
 - **Samples**: tempo-synced generated FX (risers, downlifters, reverse cymbals, sweeps, impacts,
-  sub drops), 45 CC0 recordings (waves, wind, rain and thunder, birds, streams, crowds, fire, vinyl
-  crackle, city ambience, whooshes, booms, drones), drum one-shots, plus any folders of
-  WAV/MP3/FLAC/OGG files you add. Drag
-  them onto the timeline, or drop audio files in from your file manager.
+  sub drops), 71 CC0 recordings (hand percussion, waves, wind, rain and thunder, birds, streams,
+  crowds, fire, vinyl crackle, city ambience, whooshes, booms, drones), drum one-shots, plus any
+  folders of WAV/MP3/FLAC/OGG files you add. Search them by name, then drag them onto the timeline,
+  or drop audio files in from your file manager.
 - **Tempo-following audio**: recordings and audio clips time-stretch (keeping their pitch) when you
   change the song tempo; turn off **Follow tempo** in the audio editor for clips that shouldn't.
 - **Arranging audio**: drag an audio clip's bottom-right corner to extend it with silence (e.g. to
@@ -46,6 +48,9 @@ open it and start making music.
   **Load IR…** to use any cabinet impulse response WAV. Monitor through it while you play; recordings
   stay clean (DI), so you can change the amp afterwards. Monitoring latency depends on your OS audio
   (shown in the app; ~24 ms on Linux/PipeWire with Low-latency mode).
+- **Tuner**: press T (or the tuning fork) and play: it shows the note and how many cents sharp or flat
+  you are, from a bass's low B upward. It listens to the clean input, and the reference pitch can be
+  set from A = 415 to 466 Hz.
 - **Editing**: piano roll and drum grid with Pointer, Pencil, Eraser and Box-select tools; copy,
   cut, paste and duplicate for notes and regions; Alt-drag to copy; the piano keys light up for
   selected notes; region loop/resize/split; undo/redo.
@@ -58,6 +63,10 @@ open it and start making music.
   exactly); that engine remains as the fallback where the native one isn't available.
 - **Settings** (⚙ or Ctrl+,): audio performance mode (Stable for slower computers, Balanced, Low
   latency), input device, recording offset, count-in, metronome level, and light/dark/system theme.
+- **Double-click** an instrument track or region for its piano roll, or an audio track or clip for its
+  controls (reverb, EQ and so on). Audio clips' own editor is on E or the right-click menu.
+- **Smart Controls**: a track's input, amp, channel, EQ and effect are collapsible sections. Whatever
+  doesn't fit folds to a side strip automatically, so small screens don't need sideways scrolling.
 - **Mixing**: per-track volume, pan, tone, drive, reverb, echo and a Bass/Mid/Treble EQ; master
   bus compressor/limiter.
 - **Automation**: press a track's **A** button for a lane under it; click to add points for volume,
@@ -72,7 +81,8 @@ open it and start making music.
 ## Run it
 
 ```sh
-npm install        # also downloads the ~78 MB sample library into assets/samples/
+npm install        # also downloads the sample library into assets/samples/ (about 190 MB once
+                   # converted; about 700 MB to download, so the first install takes a few minutes)
 npm start
 ```
 
@@ -179,7 +189,8 @@ to that workflow run (under Artifacts) instead of a release.
   wheel, pitch bend) don't change sounds yet; large libraries load fully into memory.
 - **MIDI files** use one tempo (the file's first) and don't carry controller data beyond sustain.
 - **The Freesound recordings are high-quality previews** (128 kbps MP3), not the original WAVs.
-- **Windows builds are tested only under Wine** in development, not on real Windows hardware.
+- **Sampled instruments are lightweight:** one velocity layer per note, and held notes end when the
+  recording does (up to 7 seconds for the newer ones). The kalimba keeps its natural, slightly loose tuning.
 
 ## Roadmap
 
@@ -211,6 +222,7 @@ Roughly in priority order:
 | Enter | Go to start (or cycle start) |
 | C | Cycle on/off |
 | K | Metronome |
+| T | Tuner |
 | Ctrl+K | Musical Typing (A–' play notes, Z/X octave, C/V velocity, Tab sustain) |
 | Y / B / E | Library / Smart Controls / Editor |
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste notes (in the editor) or regions |
@@ -234,7 +246,9 @@ src/app.js                  controller: transport, recording, files, shortcuts
 src/state.js                song model and undo store
 src/music/theory.js         notes, chords, roman numerals, voicings
 src/music/band.js           styles + drum/bass/comping generators
+src/music/pitch.js          pitch detection for the tuner
 src/engine/instruments.js   instrument library (samplers, synth presets, drum kits)
+src/engine/sample-manifest.js  which sample files make up the library, and where they come from
 src/engine/engine.js        mixer graph, scheduling, recording, offline export
 src/engine/plugins.js       plugin instruments: scanning, streaming from the helper, export
 src/engine/native-engine.js the song as the native engine plays it; native renders
@@ -244,7 +258,7 @@ native/plugin-host/         the native helper (C++/JUCE, AGPL-3.0): plugin hosti
                             audio device and monitoring (LiveAudio.h), the song engine (Song.h)
                             and ports of the app's DSP (Dsp.h, Synth.h, TrackFx.h)
 src/ui/*                    arrange view, editors, smart controls, library
-scripts/fetch-samples.mjs   downloads the sample library
+scripts/fetch-samples.mjs   downloads the sample library and converts the CC0 sets to FLAC
 scripts/fetch-plugins.mjs   downloads the bundled plugins (Dexed)
 test/                       unit tests and headless end-to-end checks
 ```
@@ -266,11 +280,9 @@ npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses
 
 ## Licenses
 
-The code is MIT licensed, except the plugin helper in `native/plugin-host`, which is built with
-JUCE and is therefore AGPL-3.0; it is a separate program the app talks to over pipes. On Windows it
-includes Steinberg's ASIO SDK headers (bundled with JUCE) under their GPL-3.0 option. The bundled
-Dexed plugin is GPL-3.0 (source: https://github.com/asb2m10/dexed). MP3 export uses LAME via `@breezystack/lamejs` (LGPL-3.0), shipped as a
-separate, replaceable file. The sample library is not covered by MIT. It comes from the Salamander
-Grand Piano, VSCO 2 Community Edition, Karoryfer, University of Iowa MIS and Freesound (CC-BY 3.0),
-plus the Hydrogen drum kits (GPL). See `assets/samples/CREDITS.md`, which the app also opens from
-Library → Sounds → Credits.
+The goal is that everything here stays free and redistributable under an open license. The code is
+MIT, except the native helper in `native/plugin-host`, which is built with JUCE and is therefore
+AGPL-3.0; it is a separate program the app talks to over pipes. The bundled sounds are CC0, CC-BY and
+GPL. [LICENSES.md](LICENSES.md) lists every component with its license, the full texts are in
+[`licenses/`](licenses/), and `assets/samples/CREDITS.md` credits each sound (the app opens both from
+Settings → About).

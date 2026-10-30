@@ -9,6 +9,8 @@ import { parseProgression } from '../music/theory.js';
 import { meter, TIME_SIGNATURES } from '../music/meter.js';
 import { getLibrary, entryDefs } from '../engine/user-instruments.js';
 import { GEN_FX } from '../engine/fxgen.js';
+import { icon } from './icons.js';
+import { matches } from './search.js';
 
 const CAT_ICON = { Plugins: '🎛️',  Keyboards: '🎹', Bass: '🎸', Guitar: '🎸', Strings: '🎻', Brass: '🎺', Woodwinds: '🎷', Mallets: '🔔', Synth: '🎛️', 'Drum Kits': '🥁' };
 
@@ -34,6 +36,8 @@ export class Library {
     this.root = root;
     this.tab = 'sounds';
     this.loopFilter = { part: 'all', style: 'all', q: '' };
+    this.soundQuery = '';
+    this.sampleQuery = '';
     this.stopPreview = null;
     this.previewId = null;
     this.userSamples = [];
@@ -60,11 +64,26 @@ export class Library {
   render() {
     const body = this.root;
     const scroll = body.scrollTop;
+    // Rebuilding replaces the search box; keep typing where it was.
+    const active = document.activeElement?.classList.contains('lib-search') ? document.activeElement : null;
+    const caret = active?.selectionStart;
     if (this.tab === 'sounds') body.replaceChildren(this.renderSounds());
     else if (this.tab === 'loops') body.replaceChildren(this.renderLoops());
     else if (this.tab === 'samples') body.replaceChildren(this.renderSamples());
     else body.replaceChildren(this.renderBand());
     body.scrollTop = scroll;
+    if (active) {
+      const search = body.querySelector('.lib-search');
+      search?.focus();
+      search?.setSelectionRange(caret, caret);
+    }
+  }
+
+  // A search box that keeps the list below it up to date.
+  searchBox(placeholder, value, onChange) {
+    const box = h('input', { class: 'lib-input lib-search', type: 'search', placeholder, value, onkeydown: e => e.stopPropagation() });
+    box.addEventListener('input', () => onChange(box.value));
+    return box;
   }
 
   // ------------------------------------------------------------ previews
@@ -97,15 +116,29 @@ export class Library {
   // ------------------------------------------------------------ sounds
 
   renderSounds() {
+    const list = h('div');
+    const search = this.searchBox('Search sounds…', this.soundQuery, q => { this.soundQuery = q; this.renderSoundList(list); });
+    this.renderSoundList(list);
+    return h('div', {}, search, list);
+  }
+
+  renderSoundList(list) {
     const track = store.selectedTrack;
-    const wrap = h('div');
-    if (!track) wrap.append(h('div', { class: 'lib-note' }, 'Click a sound to create a new track with it.'));
-    else if (track.type === 'audio') wrap.append(h('div', { class: 'lib-note' }, 'Audio tracks play recordings and samples. Select an instrument track to change its sound, or click a sound to add a new track.'));
-    wrap.append(this.renderMyInstruments(track));
-    wrap.append(this.renderPlugins(track));
+    const q = this.soundQuery;
+    const searching = !!q.trim();
+    const parts = [];
+    if (!searching) {
+      if (!track) parts.push(h('div', { class: 'lib-note' }, 'Click a sound to create a new track with it.'));
+      else if (track.type === 'audio') parts.push(h('div', { class: 'lib-note' }, 'Audio tracks play recordings and samples. Select an instrument track to change its sound, or click a sound to add a new track.'));
+    }
+    const mine = this.renderMyInstruments(track, q);
+    if (mine) parts.push(mine);
+    const plugins = this.renderPlugins(track, q);
+    if (plugins) parts.push(plugins);
     for (const cat of CATEGORIES) {
-      const items = INSTRUMENTS.filter(i => i.cat === cat);
-      wrap.append(h('div', { class: 'lib-section' },
+      const items = INSTRUMENTS.filter(i => i.cat === cat && matches(q, i.name, i.cat, i.tags, i.type === 'synth' ? 'synth' : i.type === 'sampler' ? 'sampled' : ''));
+      if (!items.length) continue;
+      parts.push(h('div', { class: 'lib-section' },
         h('h4', {}, cat),
         items.map(inst => h('div', {
           class: 'lib-item' + (track?.instrument === inst.id ? ' on' : ''),
@@ -117,17 +150,24 @@ export class Library {
         h('span', { class: 'name' }, inst.name),
         h('span', { class: 'meta' }, inst.type === 'synth' ? 'synth' : inst.type === 'kit' ? '' : 'sampled')))));
     }
-    wrap.append(h('div', { class: 'lib-note' }, 'Sampled instruments use free CC-BY and GPL recordings. ', h('a', { onclick: () => window.host?.openCredits() }, 'Credits')));
-    return wrap;
+    if (searching && !parts.length) parts.push(h('div', { class: 'lib-note' }, `No sounds match “${q.trim()}”.`));
+    if (!searching) parts.push(h('div', { class: 'lib-note' }, 'Sampled instruments use free recordings under open licenses (CC0, CC-BY and GPL). ', h('a', { onclick: () => window.host?.openCredits() }, 'Credits')));
+    list.replaceChildren(...parts);
   }
 
-  renderMyInstruments(track) {
+  renderMyInstruments(track, q = '') {
     const entries = getLibrary();
+    // While searching, show matching presets directly instead of the folders holding them.
+    if (q.trim()) {
+      const found = entries.flatMap(entry => entryDefs(entry).filter(d => matches(q, d.name, entry.name, 'my instruments')).map(d => [entry, d]));
+      if (!found.length) return null;
+      return h('div', { class: 'lib-section' }, h('h4', {}, 'My Instruments'), found.slice(0, 400).map(([entry, def]) => this.entryItem(entry, def, track)));
+    }
     const section = h('div', { class: 'lib-section' },
       h('h4', {}, 'My Instruments'),
       h('div', { class: 'btn-row' },
-        h('button', { class: 'text', title: 'Import .sf2 SoundFonts or .sfz instruments', onclick: () => this.app.importInstruments() }, '＋ SF2 / SFZ…'),
-        h('button', { class: 'text', title: 'Turn a folder of samples into an instrument or drum kit', onclick: () => this.app.importInstrumentFolder() }, '＋ Folder…')));
+        h('button', { class: 'text with-icon', title: 'Import .sf2 SoundFonts or .sfz instruments', onclick: () => this.app.importInstruments() }, icon('plus'), 'SF2 / SFZ…'),
+        h('button', { class: 'text with-icon', title: 'Turn a folder of samples into an instrument or drum kit', onclick: () => this.app.importInstrumentFolder() }, icon('plus'), 'Folder…')));
     if (!entries.length) {
       section.append(h('div', { class: 'lib-note' }, 'Bring your own sounds: SoundFonts (.sf2), SFZ instruments, or a folder of samples named by note (C4.wav, F#2.wav…) or drum hits (kick.wav, snare.wav…). You can also drop .sf2/.sfz files onto the window.'));
       return section;
@@ -137,14 +177,17 @@ export class Library {
   }
 
   // VST3 (and AU/LV2) instruments found on this computer, plus the bundled ones.
-  renderPlugins(track) {
+  renderPlugins(track, q = '') {
     const status = pluginStatus();
+    const searching = !!q.trim();
+    if (searching && !status.available) return null;
     const section = h('div', { class: 'lib-section' },
       h('h4', {}, 'Plugins'),
-      status.available ? h('div', { class: 'btn-row' },
-        h('button', { class: 'text', title: 'Look for newly installed plugins', onclick: () => this.app.rescanPlugins() }, '⟳ Rescan'),
-        h('button', { class: 'text', title: 'Also look for plugins in another folder', onclick: () => this.app.addPluginFolder() }, '＋ Folder…')) : null);
+      status.available && !searching ? h('div', { class: 'btn-row' },
+        h('button', { class: 'text with-icon', title: 'Look for newly installed plugins', onclick: () => this.app.rescanPlugins() }, icon('cycle'), 'Rescan'),
+        h('button', { class: 'text with-icon', title: 'Also look for plugins in another folder', onclick: () => this.app.addPluginFolder() }, icon('plus'), 'Folder…')) : null);
     if (!status.scanned) {
+      if (searching) return null;
       section.append(h('div', { class: 'lib-note' }, this.app.pluginScanText || 'Looking for plugins…'));
       return section;
     }
@@ -152,7 +195,8 @@ export class Library {
       section.append(h('div', { class: 'lib-note' }, 'Plugin support isn\'t included in this build of Basement Band.'));
       return section;
     }
-    const list = pluginList().filter(d => d.isInstrument);
+    const list = pluginList().filter(d => d.isInstrument && matches(q, d.name, d.manufacturer, d.format, 'plugin'));
+    if (searching && !list.length) return null;
     if (!list.length) section.append(h('div', { class: 'lib-note' }, 'No instrument plugins found. Install VST3 instruments in the usual place, or add their folder.'));
     for (const def of list) {
       section.append(h('div', {
@@ -166,14 +210,12 @@ export class Library {
       h('span', { class: 'name' }, def.bundled && /dexed/i.test(def.name) ? 'Dexed FM Synth' : def.name),
       h('span', { class: 'meta' }, def.bundled ? 'included' : def.format)));
     }
-    if (status.failed?.length) section.append(h('div', { class: 'lib-note', title: status.failed.join('\n') }, `${status.failed.length} plugin file(s) couldn't be loaded and were skipped.`));
+    if (status.failed?.length && !searching) section.append(h('div', { class: 'lib-note', title: status.failed.join('\n') }, `${status.failed.length} plugin file(s) couldn't be loaded and were skipped.`));
     return section;
   }
 
-  renderEntry(entry, track) {
-    const defs = entryDefs(entry);
-    const remove = h('button', { class: 'icon-btn', title: 'Remove from My Instruments', onclick: e => { e.stopPropagation(); this.app.removeUserInstrument(entry); } }, '✕');
-    const item = def => h('div', {
+  entryItem(entry, def, track) {
+    return h('div', {
       class: 'lib-item' + (track?.instrument === def.id ? ' on' : ''),
       draggable: true,
       ondragstart: e => e.dataTransfer.setData('application/x-bb', JSON.stringify({ kind: 'instrument', id: def.id })),
@@ -183,6 +225,12 @@ export class Library {
     h('span', { class: 'icon' }, def.isKit ? '🥁' : '🎼'),
     h('span', { class: 'name' }, def.name),
     entry.kind === 'sf2' ? h('span', { class: 'meta' }, `${def.source.bank}:${String(def.source.program + 1).padStart(3, '0')}`) : null);
+  }
+
+  renderEntry(entry, track) {
+    const defs = entryDefs(entry);
+    const remove = h('button', { class: 'icon-btn', title: 'Remove from My Instruments', onclick: e => { e.stopPropagation(); this.app.removeUserInstrument(entry); } }, icon('close'));
+    const item = def => this.entryItem(entry, def, track);
 
     if (defs.length === 1) {
       const el = item(defs[0]);
@@ -192,7 +240,7 @@ export class Library {
     const key = 'user:' + entry.path;
     const open = this.expanded.has(key);
     const head = h('div', { class: 'lib-item folder-head', title: entry.path, onclick: () => { if (open) this.expanded.delete(key); else this.expanded.add(key); this.render(); } },
-      h('span', { class: 'icon' }, open ? '▾' : '▸'),
+      h('span', { class: 'icon' }, icon(open ? 'down' : 'right')),
       h('span', { class: 'name' }, entry.name),
       h('span', { class: 'meta' }, `${defs.length}`),
       remove);
@@ -214,8 +262,7 @@ export class Library {
 
   renderLoops() {
     const f = this.loopFilter;
-    const search = h('input', { class: 'lib-input', type: 'search', placeholder: 'Search loops…', value: f.q, onkeydown: e => e.stopPropagation() });
-    search.addEventListener('input', () => { f.q = search.value; this.renderLoopList(list); });
+    const search = this.searchBox('Search loops…', f.q, q => { f.q = q; this.renderLoopList(list); });
     const chips = h('div', { class: 'chips' }, ['all', ...PARTS].map(p => h('button', {
       class: 'chip' + (f.part === p ? ' on' : ''),
       onclick: () => { f.part = p; this.render(); },
@@ -233,8 +280,7 @@ export class Library {
 
   renderLoopList(list) {
     const f = this.loopFilter;
-    const q = f.q.toLowerCase();
-    const items = LOOPS.filter(l => (f.part === 'all' || l.part === f.part) && (f.style === 'all' || l.style === f.style) && (!q || l.name.toLowerCase().includes(q)));
+    const items = LOOPS.filter(l => (f.part === 'all' || l.part === f.part) && (f.style === 'all' || l.style === f.style) && matches(f.q, l.name));
     list.replaceChildren(...items.map(loop => {
       const playing = this.previewId === loop.id;
       return h('div', {
@@ -254,7 +300,7 @@ export class Library {
             return this.app.engine.preview(loop.instrument, notes, { bpm: store.project.tracks.length ? store.project.bpm : STYLES[loop.style].bpm, lengthBeats: loop.bars * meter(timeSig).barBeats });
           });
         },
-      }, playing ? '■' : '▶'),
+      }, icon(playing ? 'stop' : 'play')),
       h('span', { class: 'name' }, loop.name),
       h('span', { class: 'meta' }, `${loop.bars} bars`));
     }));
@@ -263,48 +309,60 @@ export class Library {
   // ------------------------------------------------------------ samples
 
   renderSamples() {
+    const list = h('div');
+    const search = this.searchBox('Search samples…', this.sampleQuery, q => { this.sampleQuery = q; this.renderSampleList(list); });
+    this.renderSampleList(list);
+    return h('div', {},
+      search,
+      h('div', { class: 'lib-note' }, 'Drag a sample onto the timeline to make an audio region. You can also drop audio files from your computer.'),
+      h('button', { class: 'text with-icon', style: { width: '100%', marginBottom: '8px' }, onclick: () => this.app.addSampleFolder() }, icon('plus'), 'Add Sample Folder…'),
+      list);
+  }
+
+  renderSampleList(list) {
     const groups = new Map();
     // Generated effects come first and are sized to the song's tempo when used.
     groups.set('Generated FX', GEN_FX.flatMap(fx => (fx.bars || [null]).map(bars => ({
       group: 'Generated FX', gen: fx.id, bars, name: bars ? `${fx.name} · ${bars} bar${bars > 1 ? 's' : ''}` : fx.name,
     }))));
-    for (const s of builtinSamples()) {
+    for (const s of [...builtinSamples(), ...this.userSamples]) {
       if (!groups.has(s.group)) groups.set(s.group, []);
       groups.get(s.group).push(s);
     }
-    for (const s of this.userSamples) {
-      if (!groups.has(s.group)) groups.set(s.group, []);
-      groups.get(s.group).push(s);
-    }
-    const wrap = h('div', {},
-      h('div', { class: 'lib-note' }, 'Drag a sample onto the timeline to make an audio region. You can also drop audio files from your computer.'),
-      h('button', { class: 'text', style: { width: '100%', marginBottom: '8px' }, onclick: () => this.app.addSampleFolder() }, '＋ Add Sample Folder…'));
-    for (const [group, list] of groups) {
-      const open = this.expanded.has(group);
-      const folder = list[0].folder;
-      wrap.append(h('div', { class: 'lib-section' },
-        h('div', { class: 'lib-item folder-head', onclick: () => { if (open) this.expanded.delete(group); else this.expanded.add(group); this.render(); } },
-          h('span', { class: 'icon' }, open ? '▾' : '▸'),
+    const q = this.sampleQuery;
+    const searching = !!q.trim();
+    const parts = [];
+    for (const [group, all] of groups) {
+      const shown = searching ? all.filter(s => matches(q, s.name, s.group, s.credit, s.rel)) : all;
+      if (!shown.length) continue;
+      const open = searching || this.expanded.has(group);
+      const folder = all[0].folder;
+      parts.push(h('div', { class: 'lib-section' },
+        h('div', { class: 'lib-item folder-head', onclick: () => { if (searching) return; if (open) this.expanded.delete(group); else this.expanded.add(group); this.render(); } },
+          h('span', { class: 'icon' }, icon(open ? 'down' : 'right')),
           h('span', { class: 'name' }, group),
-          h('span', { class: 'meta' }, String(list.length)),
-          folder ? h('button', { title: 'Remove folder', onclick: e => { e.stopPropagation(); this.app.removeSampleFolder(folder); } }, '✕') : null),
-        open ? list.slice(0, 400).map(s => {
-          const id = s.url || s.path || `gen:${s.gen}:${s.bars}`;
-          const playing = this.previewId === id;
-          return h('div', {
-            class: 'lib-item',
-            draggable: true,
-            ondragstart: e => e.dataTransfer.setData('application/x-bb', JSON.stringify({ kind: 'sample', url: s.url, path: s.path, gen: s.gen, bars: s.bars, name: s.name })),
-            title: s.gen ? (s.bars ? 'Generated to fit the song tempo' : 'Generated') : s.credit ? `${s.name} — by ${s.credit} (CC0)` : s.rel || s.name,
-          },
-          h('button', {
-            class: 'play-btn' + (playing ? ' on' : ''),
-            onclick: e => { e.stopPropagation(); this.togglePreview(id, () => this.app.previewSample(s)); },
-          }, playing ? '■' : '▶'),
-          h('span', { class: 'name' }, s.name));
-        }) : null));
+          h('span', { class: 'meta' }, String(shown.length)),
+          folder ? h('button', { title: 'Remove folder', onclick: e => { e.stopPropagation(); this.app.removeSampleFolder(folder); } }, icon('close')) : null),
+        open ? shown.slice(0, 400).map(s => this.sampleItem(s)) : null));
     }
-    return wrap;
+    if (searching && !parts.length) parts.push(h('div', { class: 'lib-note' }, `No samples match “${q.trim()}”.`));
+    list.replaceChildren(...parts);
+  }
+
+  sampleItem(s) {
+    const id = s.url || s.path || `gen:${s.gen}:${s.bars}`;
+    const playing = this.previewId === id;
+    return h('div', {
+      class: 'lib-item',
+      draggable: true,
+      ondragstart: e => e.dataTransfer.setData('application/x-bb', JSON.stringify({ kind: 'sample', url: s.url, path: s.path, gen: s.gen, bars: s.bars, name: s.name })),
+      title: s.gen ? (s.bars ? 'Generated to fit the song tempo' : 'Generated') : s.credit ? `${s.name} — by ${s.credit} (CC0)` : s.rel || s.name,
+    },
+    h('button', {
+      class: 'play-btn' + (playing ? ' on' : ''),
+      onclick: e => { e.stopPropagation(); this.togglePreview(id, () => this.app.previewSample(s)); },
+    }, icon(playing ? 'stop' : 'play')),
+    h('span', { class: 'name' }, s.name));
   }
 
   async loadUserFolders() {
@@ -364,7 +422,7 @@ export class Library {
       slider('Energy', 'intensity'),
       h('label', { class: 'check', style: { marginBottom: '8px' } },
         h('input', { type: 'checkbox', checked: b.setTempo, onchange: e => { b.setTempo = e.target.checked; } }), `Set tempo to ${style.bpm} bpm`),
-      h('button', { class: 'text accent wide', onclick: () => this.app.createBand({ ...b, parts: [...b.parts] }) }, '🎸 Create Band'),
+      h('button', { class: 'text accent wide', onclick: () => this.app.createBand({ ...b, parts: [...b.parts] }) }, 'Create Band'),
       h('div', { class: 'lib-note' }, 'Every player is a normal track: change the sound in Sounds, edit notes in the Editor, or use Smart Controls to change the style, complexity and energy.'),
     );
   }

@@ -254,6 +254,7 @@ function registerIpc(win) {
     app.exit(0);
   });
   ipcMain.handle('shell:credits', () => shell.openPath(path.join(ASSETS, 'samples', 'CREDITS.md')));
+  ipcMain.handle('shell:licenses', () => shell.openPath(path.join(app.isPackaged ? process.resourcesPath : ROOT, 'LICENSES.md')));
 
   // ---- plugins (VST3, and LV2 on Linux, via the native helper)
   const send = m => { if (!win.isDestroyed()) win.webContents.send('plugin:msg', m); };

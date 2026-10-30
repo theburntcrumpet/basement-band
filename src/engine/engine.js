@@ -13,6 +13,7 @@ import { heardContextTime, placeTake, placeNativeTake } from './take-placement.j
 import { songForNative, renderNative } from './native-engine.js';
 
 const Tone = window.Tone;
+const TUNER_WINDOW = 8192; // long enough to hold a few periods of a bass's low B
 const PPQ = 192;
 // The master limiter's lookahead (see master-worklet.js): everything you hear is this much later.
 const MASTER_DELAY = 0.001;
@@ -642,6 +643,12 @@ export class Engine extends EventTarget {
     return this.nativePlayback ? this.nativeState.playing : this.transport.state === 'started';
   }
 
+  // False during the moment between pressing play (or a count-in) and the song actually rolling,
+  // when position() can still report where the transport was before.
+  get rolling() {
+    return this.playing && !!this.startedAt && Tone.immediate() >= this.startedAt.time;
+  }
+
   // Current audible position in beats.
   position() {
     if (this.nativePlayback) {
@@ -1038,7 +1045,7 @@ export class Engine extends EventTarget {
   }
 
   closeInput(force = false) {
-    if (!force && (this.monitor || this.recording)) return;
+    if (!force && (this.monitor || this.recording || this.tuner)) return;
     if (this.native.device) {
       this.monitor = null;
       // The device stays open while it plays the song; only monitoring stops.
@@ -1056,6 +1063,43 @@ export class Engine extends EventTarget {
     this.inputStream = null;
     this.inputSource = null;
     this.inputDeviceId = null;
+  }
+
+  // The tuner listens to the clean input, whichever engine has it, without sending it anywhere.
+  async startTuner(deviceId, channel = 'left') {
+    await this.resume();
+    await this.openInput(deviceId);
+    if (this.nativeActive) {
+      if (!this.monitor) await this.native.monitor(null, this.project, channel);
+      const data = new Float32Array(TUNER_WINDOW);
+      this.tuner = { data, rate: this.native.device.rate };
+      await this.native.startTap(chunk => {
+        const recent = chunk.length >= data.length ? chunk.subarray(chunk.length - data.length) : chunk;
+        data.copyWithin(0, recent.length);
+        data.set(recent, data.length - recent.length);
+      });
+      return;
+    }
+    const t = this.inputTap(channel);
+    const analyser = Tone.getContext().rawContext.createAnalyser();
+    analyser.fftSize = TUNER_WINDOW;
+    t.tap.connect(analyser);
+    this.tuner = { analyser, tap: t.tap, data: new Float32Array(TUNER_WINDOW), rate: Tone.getContext().sampleRate };
+  }
+
+  // The latest input for the tuner: {data, rate}.
+  tunerInput() {
+    this.tuner?.analyser?.getFloatTimeDomainData(this.tuner.data);
+    return this.tuner;
+  }
+
+  async stopTuner() {
+    const tuner = this.tuner;
+    if (!tuner) return;
+    this.tuner = null;
+    if (tuner.analyser) { try { tuner.tap.disconnect(tuner.analyser); } catch { /* input already closed */ } }
+    await this.native.stopTap();
+    this.closeInput();
   }
 
   // Records the clean (unprocessed) input; amps and effects stay adjustable afterwards.
