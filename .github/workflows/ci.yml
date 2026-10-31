@@ -46,6 +46,7 @@ jobs:
       - name: End-to-end flows
         run: npm run smoke
       - name: Native engine
+        if: ${{ !cancelled() }}
         run: npm run test:native
 
   plugin-host:

@@ -332,13 +332,13 @@ module.exports = async function flows(win, app) {
     const { renderProject } = await import('./engine/engine.js');
     const { newProject, newTrack } = await import('./state.js');
     const { defaultFx } = await import('./engine/effects.js');
-    const song = (masterFx, trackFx) => {
+    const song = (masterFx, trackFx, sampleRate) => {
       const p = newProject();
       p.masterFx = masterFx;
       const t = Object.assign(newTrack('instrument', 'chip'), { reverb: 0, fx: trackFx || { type: 'none' } });
       t.regions.push({ id: 'r', start: 0, length: 8, loopLength: 8, notes: [36, 60, 84].map(n => ({ t: 0, d: 3, n, v: 0.8 })) });
       p.tracks.push(t);
-      return renderProject(p, new Map(), { start: 0, end: 8, tail: 0.1 });
+      return renderProject(p, new Map(), { start: 0, end: 8, tail: 0.1, sampleRate });
     };
     const band = async (buf, type, freq, from = 0, to = buf.duration) => {
       const out = await Tone.Offline(() => { const pl = new Tone.Player(buf); pl.chain(new Tone.Filter({ type, frequency: freq, rolloff: -48 }), Tone.getDestination()); pl.start(0); }, buf.duration);
@@ -348,16 +348,18 @@ module.exports = async function flows(win, app) {
     };
     const rmsAt = (buf, from, to) => { const d = buf.getChannelData(0), a = Math.floor(from * buf.sampleRate), b = Math.floor(to * buf.sampleRate); let e = 0; for (let i = a; i < b; i++) e += d[i] * d[i]; return Math.sqrt(e / (b - a)); };
     const dry = await song({ type: 'none' });
-    const vinyl = await song({ ...defaultFx('vinyl'), age: 0.8, crackle: 0.8, pops: 0.6 });
+    // The crackle is made sample by sample, so its level depends a little on the sample rate.
+    const crackled = { ...defaultFx('vinyl'), age: 0.8, crackle: 0.8, pops: 0.6 };
+    const vinyl44 = await song(crackled, null, 44100), vinyl48 = await song(crackled, null, 48000);
     const aged = await song({ ...defaultFx('vinyl'), age: 0.8, crackle: 0, pops: 0 });
     const radio = await song(defaultFx('radio'));
     const lofi = await song({ type: 'none' }, { ...defaultFx('lofi'), crush: 0.9 });
     // 8 beats at 110 bpm is 4.36 s; notes last 3 beats (1.64 s). After ~2.4 s the dry mix is silent.
-    const quietDry = rmsAt(dry, 2.6, 4.2), quietVinyl = rmsAt(vinyl, 2.6, 4.2);
+    const quietDry = rmsAt(dry, 2.6, 4.2), quietVinyl = Math.min(rmsAt(vinyl44, 2.6, 4.2), rmsAt(vinyl48, 2.6, 4.2));
     const topDry = await band(dry, 'highpass', 9000, 0.1, 1.5), topVinyl = await band(aged, 'highpass', 9000, 0.1, 1.5);
     const lowDry = await band(dry, 'lowpass', 150, 0.1, 1.5), lowRadio = await band(radio, 'lowpass', 150, 0.1, 1.5);
     const lofiLevel = rmsAt(lofi, 0.1, 1.5);
-    const checks = { crackle: quietVinyl > 0.003 && quietVinyl > quietDry * 20, aged: topVinyl < topDry * 0.5, radio: lowRadio < lowDry * 0.2, lofi: lofiLevel > 0.01 };
+    const checks = { crackle: quietVinyl > 0.002 && quietVinyl > quietDry * 20, aged: topVinyl < topDry * 0.5, radio: lowRadio < lowDry * 0.2, lofi: lofiLevel > 0.01 };
     const ok = Object.values(checks).every(Boolean);
     const detail = 'tail ' + quietDry.toExponential(1) + '->' + quietVinyl.toFixed(4) + ', >9k ' + (topVinyl / topDry).toFixed(2) + 'x, radio <150Hz ' + (lowRadio / lowDry).toFixed(3) + 'x';
     return ok ? 'ok ' + detail : JSON.stringify(checks) + ' ' + detail;`);
