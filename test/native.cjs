@@ -5,9 +5,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const harness = require('./harness.cjs');
 
-// Shared CI machines are slower and busier, so only the real-time limits themselves apply there.
-const CI = !!process.env.CI;
-
 module.exports = async function native(win, app) {
   const { check, record, finish } = harness(win, app);
   await new Promise(r => setTimeout(r, 1500));
@@ -296,7 +293,7 @@ module.exports = async function native(win, app) {
     await app.rescanPlugins();
     const { pluginList } = await import('./engine/plugins.js');
     const dexed = pluginList().find(d => /dexed/i.test(d.name));
-    if (!dexed) return ${CI ? "'Dexed is missing'" : "'ok skipped (Dexed not bundled here)'"};
+    if (!dexed) return 'ok skipped (Dexed not bundled here)';
     const t = app.addTrack('instrument', dexed.id, 'FM');
     store.update(() => { t.regions.push({ id: 'p', start: 0, length: 4, loopLength: 4, notes: [0, 1, 2, 3].map(b => ({ t: b, d: 0.5, n: 60 + b * 3, v: 0.9 })) }); t.reverb = 0; t.echo = 0; });
     await app.engine.whenLoaded();
@@ -552,7 +549,7 @@ module.exports = async function native(win, app) {
     for (const times of [await render(), await render()]) times.forEach((t, i) => { fastest[i] = Math.min(fastest[i], t); });
     const worst = Math.max(...fastest), at = fastest.indexOf(worst) * 128 / 48000, typical = median(fastest);
     if (worst > typical * SPIKE) return 'block at ' + at.toFixed(2) + ' s took ' + worst.toFixed(2) + ' ms, typical ' + typical.toFixed(2) + ' ms';
-    const limit = ${CI ? 'budget' : 'budget * 0.6'};
+    const limit = budget * 0.6;
     return typical < limit ? 'ok slowest 128-sample block ' + worst.toFixed(2) + ' ms, typical ' + typical.toFixed(2) + ' ms, of a ' + budget.toFixed(2) + ' ms budget' : 'typical block took ' + typical.toFixed(2) + ' ms (limit ' + limit.toFixed(2) + ' ms)';`);
 
   await check('the app plays songs through the native engine (virtual interface)', `
@@ -610,7 +607,7 @@ module.exports = async function native(win, app) {
       const sentAt = before.frame + (before.now - before.frameTime) * 48000;
       return firstLoud < 0 ? Infinity : (onsetOurs - sentAt) / 48;
     };
-    const liveLimit = ${CI ? 30 : 15};
+    const liveLimit = 15;
     const tries = [];
     for (let i = 0; i < 3; i++) {
       tries.push(await liveNote());

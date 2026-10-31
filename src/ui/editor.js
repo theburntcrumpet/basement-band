@@ -224,7 +224,7 @@ export class Editor {
       h('button', { class: 'text', title: 'Quantize selected notes (Q)', onclick: () => this.quantize() }, 'Quantize'),
       !this.drums ? h('button', { class: 'text', title: 'Transpose down an octave', onclick: () => this.transpose(-12) }, '−8va') : null,
       !this.drums ? h('button', { class: 'text', title: 'Transpose up an octave', onclick: () => this.transpose(12) }, '+8va') : null,
-      !this.drums ? h('label', {}, 'Scale', rootSel, scaleSel) : null,
+      !this.drums ? h('label', { class: 'scale-control' }, 'Scale', rootSel, scaleSel) : null,
       !this.drums ? h('label', { title: 'New and moved notes land on the scale. Existing notes stay put until you move them.' }, lock, 'Lock') : null,
       h('span', { class: 'editor-hint' }, info || 'Ctrl+C/X/V copy, cut, paste • Ctrl+D duplicate • Alt-drag copies • right-click deletes'),
     ].filter(Boolean));
