@@ -16,9 +16,41 @@ const AUDIO_EXT = new Set(['.wav', '.mp3', '.ogg', '.flac', '.m4a', '.aac', '.ai
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 const INSTRUMENT_EXT = new Set(['.sf2', '.sfz']);
 
+// A suite that throws or never finishes is a failed run, not a window left open.
+const TEST_RUN_LIMIT_MS = 20 * 60 * 1000;
+async function runTestSuite(win) {
+  setTimeout(() => {
+    console.error(`Test run still going after ${TEST_RUN_LIMIT_MS / 60000} minutes; stopping it.`);
+    app.exit(2);
+  }, TEST_RUN_LIMIT_MS).unref();
+  try {
+    await require(path.resolve(process.env.BB_SMOKE))(win, app);
+  } catch (err) {
+    console.error('Test suite failed:', err);
+    app.exit(1);
+  }
+}
+
+// Clears out what finished test runs left. (Not done as a run ends: Chromium writes to its folder until
+// the very last moment, and a run that was killed wouldn't get the chance.)
+function clearOldTestData(tmp) {
+  const fs = require('node:fs');
+  for (const name of fs.readdirSync(tmp)) {
+    const pid = /^basement-band-test-(\d+)$/.exec(name)?.[1];
+    if (!pid) continue;
+    try {
+      process.kill(Number(pid), 0);
+    } catch (err) {
+      if (err.code === 'ESRCH') fs.rmSync(path.join(tmp, name), { recursive: true, force: true });
+    }
+  }
+}
+
 // Test runs get their own settings so they never touch the user's library.
 if (process.env.BB_SMOKE) {
-  app.setPath('userData', path.join(require('node:os').tmpdir(), `basement-band-test-${process.pid}`));
+  const tmp = require('node:os').tmpdir();
+  clearOldTestData(tmp);
+  app.setPath('userData', path.join(tmp, `basement-band-test-${process.pid}`));
   if (process.env.BB_TEST_SETTINGS) {
     require('node:fs').mkdirSync(app.getPath('userData'), { recursive: true });
     require('node:fs').writeFileSync(path.join(app.getPath('userData'), 'settings.json'), process.env.BB_TEST_SETTINGS);
@@ -313,7 +345,7 @@ async function createWindow() {
     win.webContents.on('console-message', e => console.log(`[renderer:${e.level}] ${e.message}`));
   }
   await win.loadURL('app://bb/index.html');
-  if (process.env.BB_SMOKE) require(path.resolve(process.env.BB_SMOKE))(win, app);
+  if (process.env.BB_SMOKE) runTestSuite(win);
 }
 
 app.whenReady().then(() => {

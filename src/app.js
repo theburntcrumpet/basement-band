@@ -184,6 +184,7 @@ class App {
   onChange() {
     const p = store.project;
     this.engine.sync(p);
+    this.library.chordsChanged();
     if (this.monitorTrack && !store.track(this.monitorTrack)) this.stopMonitoring();
     // Mixer, amp and effect changes apply directly; only re-plan playback when timing could change.
     const plan = this.playbackPlan(p);

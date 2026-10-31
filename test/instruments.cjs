@@ -2,17 +2,13 @@
 // Run via `npm run test:instruments` (hidden X display, isolated settings).
 const fs = require('node:fs');
 const path = require('node:path');
+const harness = require('./harness.cjs');
 
 module.exports = async function instruments(win, app) {
   const out = path.join(__dirname, '..', 'dist', 'smoke');
   fs.mkdirSync(out, { recursive: true });
-  const js = code => win.webContents.executeJavaScript(`(async () => { ${code} })().catch(e => 'ERROR ' + e.stack)`);
+  const { js, check, finish } = harness(win, app);
   const shot = async name => fs.writeFileSync(path.join(out, name + '.png'), (await win.webContents.capturePage()).toPNG());
-  const results = [];
-  const check = async (name, code) => {
-    const r = await js(code);
-    results.push(`${typeof r === 'string' && r.startsWith('ok') ? 'PASS' : 'FAIL'} ${name}: ${r}`);
-  };
   const sfzDir = process.env.BB_SFZ_TEST_DIR || '';
   await new Promise(r => setTimeout(r, 1200));
 
@@ -155,6 +151,5 @@ module.exports = async function instruments(win, app) {
   await js(`app.library.show('sounds'); document.querySelector('#library-body').scrollTop = 0;`);
   await new Promise(r => setTimeout(r, 400));
   await shot('09-my-instruments');
-  console.log('\n' + results.join('\n'));
-  app.quit();
+  finish();
 };

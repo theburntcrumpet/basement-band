@@ -54,6 +54,13 @@ open it and start making music.
 - **Editing**: piano roll and drum grid with Pointer, Pencil, Eraser and Box-select tools; copy,
   cut, paste and duplicate for notes and regions; Alt-drag to copy; the piano keys light up for
   selected notes; region loop/resize/split; undo/redo.
+- **Scales**: the piano roll highlights the song's key or any of 30 scales (modes, pentatonics, blues,
+  jazz and world scales) on any root. Lock to scale keeps drawn and moved notes on it, and the arrow keys walk it.
+- **Chord wheel**: the Chords tab shows the chords that belong to a scale, as triads, sevenths or ninths,
+  arranged so neighbours sound good together. Click one to hear it, then drag on the piano roll to draw
+  it as a held chord, a rhythm (pop pulse, oom-pah, funk stabs and more) or an arpeggio.
+- **Trimming**: drag either end of a note, a MIDI region or an audio clip. What's left stays where it is
+  in the song, and an audio clip's editor shows the whole recording with handles to trim and slide it.
 - **Native audio engine**: songs play through a native engine (JACK/ALSA on Linux; WASAPI, ASIO or
   DirectSound on Windows) talking straight to your interface: instruments, plugins, mixer, effects,
   automation and the metronome, with only the interface's buffering as delay. Guitars monitor through
@@ -266,17 +273,21 @@ test/                       unit tests and headless end-to-end checks
 ## Tests
 
 ```sh
-npm test         # music theory and generator unit tests
+npm test         # unit tests: music theory, generators, file formats, the tuner's pitch detection
 npm run smoke    # end-to-end flows in a hidden app window (Linux, needs xvfb-run; forces X11 so
                  # nothing opens on a Wayland desktop). Plugins are exercised with a stand-in
                  # helper (test/fake-plugin-host.cjs), so no native build is needed
 npm run check:plugin-host  # the real helper with Dexed (CI runs this on Linux and Windows)
 npm run check:live-audio   # native monitoring and recording on a virtual interface (also in CI)
-npm run test:native        # the app with the real helper: native vs Web Audio tone, live monitoring
-npm run levels   # renders every instrument and prints its loudness
+npm run test:native        # the app with the real helper (build it first): the native engine against
+                           # Web Audio for every kind of sound, live playback, recording, crash recovery
 npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses FluidR3_GM.sf2
                            # if installed; set BB_SFZ_TEST_DIR to a folder of SFZ libraries)
+npm run levels   # a report, not a test: renders every instrument and prints its loudness
 ```
+
+CI runs `npm test`, `smoke` and `test:native` on Linux, and the helper checks on Linux and Windows. The
+in-app suites print `PASS`, `SKIP` or `FAIL` as each check finishes and exit non-zero if any failed.
 
 ## Licenses
 

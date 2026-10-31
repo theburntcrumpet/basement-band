@@ -1,10 +1,10 @@
 // The arrangement: ruler, cycle range, track headers, lanes and regions.
 
 import { icon } from './icons.js';
-import { h, $, drag, contextMenu, canvas2d, palette } from './dom.js';
+import { h, $, drag, contextMenu, canvas2d, palette, toast } from './dom.js';
 import { AUTO_PARAMS, AUTO_PARAM, curve, valueAt, staticValue, normalize } from '../engine/automation.js';
 import { sections } from '../arrangement.js';
-import { store, uid, TRACK_COLORS, resizeRegion } from '../state.js';
+import { store, uid, TRACK_COLORS, resizeRegion, trimClipStart, trimMidiStart, clipStartLimit } from '../state.js';
 import { meter } from '../music/meter.js';
 import { getInstrument } from '../engine/instruments.js';
 import { sourceSpb } from '../engine/engine.js';
@@ -227,6 +227,7 @@ export class Arrange {
     const phase = track.type === 'audio' ? region.phase || 0 : 0;
     for (let b = loopLen - phase; b < region.length - 1e-6; b += loopLen) if (b > 1e-6) el.append(h('div', { class: 'loop-mark', style: { left: b * z + 'px' } }));
     el.append(h('div', { class: 'handle-loop' }), h('div', { class: 'handle-resize' }));
+    el.append(h('div', { class: 'handle-start', title: 'Drag to trim the start' }));
     requestAnimationFrame(() => this.drawRegion(cv, track, region, w));
 
     el.addEventListener('mousedown', e => this.regionDown(e, track, region));
@@ -650,10 +651,11 @@ export class Arrange {
     // browser never sends one.
     if (e.detail === 2 && !e.shiftKey) return this.app.openTrack(track, region.id);
 
-    const mode = e.target.classList.contains('handle-resize') ? 'resize' : e.target.classList.contains('handle-loop') ? 'loop' : 'move';
+    const classes = e.target.classList;
+    const mode = classes.contains('handle-resize') ? 'resize' : classes.contains('handle-loop') ? 'loop' : classes.contains('handle-start') ? 'start' : 'move';
     const tracks = store.project.tracks;
     const picked = [...sel].map(id => store.findRegion(id)).filter(Boolean);
-    const orig = picked.map(({ track: t, region: r }) => ({ r, t, start: r.start, length: r.length, loopLength: r.loopLength, notes: r.notes, offset: r.offset, ti: tracks.indexOf(t) }));
+    const orig = picked.map(({ track: t, region: r }) => ({ r, t, start: r.start, length: r.length, loopLength: r.loopLength, notes: r.notes, offset: r.offset, base: { ...r }, ti: tracks.indexOf(t) }));
     let copied = false;
 
     const anchor = orig.find(o => o.r === region) || orig[0];
@@ -677,6 +679,15 @@ export class Arrange {
             target.regions.push(o.r);
           }
         }
+      } else if (mode === 'start') {
+        const minLen = this.snapUnit() >= this.meter.barBeats ? this.meter.pulse : 0.25;
+        for (const o of orig) {
+          const audio = o.t.type === 'audio';
+          const earliest = audio ? clipStartLimit(o.base, store.project) : 0;
+          const start = Math.max(earliest, Math.min(o.start + o.length - minLen, this.snap(o.start + dx / this.zoom, ev.shiftKey)));
+          if (audio) trimClipStart(o.r, start, store.project, o.base);
+          else trimMidiStart(o.r, start, o.base);
+        }
       } else {
         for (const o of orig) {
           const minLen = this.snapUnit() >= this.meter.barBeats ? this.meter.pulse : 0.25;
@@ -696,7 +707,10 @@ export class Arrange {
         }
       }
       this.app.refresh();
-    }, () => store.endGesture());
+    }, () => {
+      if (mode === 'start' && orig.some(o => o.base.gen && !o.r.gen)) toast('Region converted to editable notes');
+      store.endGesture();
+    });
   }
 
   setupDrop(lane, track) {

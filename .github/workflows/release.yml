@@ -29,7 +29,9 @@ jobs:
       matrix:
         include:
           - name: Linux
-            os: ubuntu-latest
+            # Pinned: the helper is built here, and only runs on systems with this glibc or newer.
+            # 24.04 has 2.39, which covers Debian 13 and Ubuntu 24.04 onwards. Don't use -latest.
+            os: ubuntu-24.04
             targets: --linux AppImage deb
             files: dist/*.AppImage dist/*.deb
           - name: Windows

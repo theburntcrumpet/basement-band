@@ -1,5 +1,5 @@
 // Renders each instrument alone and prints its loudness, to balance preset volumes.
-// BB_SMOKE=test/levels.cjs xvfb-run -a npx electron .
+// A report rather than a test: run with `npm run levels`.
 module.exports = async function levels(win, app) {
   const js = code => win.webContents.executeJavaScript(code);
   await new Promise(r => setTimeout(r, 1200));

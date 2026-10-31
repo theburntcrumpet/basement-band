@@ -1,4 +1,4 @@
-// Library side panel: Sounds, Loops, Samples and the Session Band builder.
+// Library side panel: Sounds, Loops, Samples, the Session Band builder and the chord wheel.
 
 import { h, toast } from './dom.js';
 import { store } from '../state.js';
@@ -11,6 +11,7 @@ import { getLibrary, entryDefs } from '../engine/user-instruments.js';
 import { GEN_FX } from '../engine/fxgen.js';
 import { icon } from './icons.js';
 import { matches } from './search.js';
+import { renderChordWheel } from './chords.js';
 
 const CAT_ICON = { Plugins: '🎛️',  Keyboards: '🎹', Bass: '🎸', Guitar: '🎸', Strings: '🎻', Brass: '🎺', Woodwinds: '🎷', Mallets: '🔔', Synth: '🎛️', 'Drum Kits': '🥁' };
 
@@ -70,6 +71,7 @@ export class Library {
     if (this.tab === 'sounds') body.replaceChildren(this.renderSounds());
     else if (this.tab === 'loops') body.replaceChildren(this.renderLoops());
     else if (this.tab === 'samples') body.replaceChildren(this.renderSamples());
+    else if (this.tab === 'chords') body.replaceChildren(renderChordWheel(this.app));
     else body.replaceChildren(this.renderBand());
     body.scrollTop = scroll;
     if (active) {
@@ -77,6 +79,10 @@ export class Library {
       search?.focus();
       search?.setSelectionRange(caret, caret);
     }
+  }
+
+  chordsChanged() {
+    if (this.tab === 'chords') this.render();
   }
 
   // A search box that keeps the list below it up to date.

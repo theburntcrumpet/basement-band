@@ -159,7 +159,7 @@ export function palette() {
   if (paletteCache && paletteTheme === theme) return paletteCache;
   const css = getComputedStyle(document.documentElement);
   const v = name => css.getPropertyValue(name).trim();
-  // e.g. palette().cvRowKey reads --cv-row-key (cached until the theme changes).
+  // e.g. palette().cvRowScale reads --cv-row-scale (cached until the theme changes).
   const resolved = {};
   paletteCache = new Proxy(resolved, { get: (o, key) => (key in o ? o[key] : (o[key] = v('--' + String(key).replace(/[A-Z]/g, c => '-' + c.toLowerCase())))) });
   paletteTheme = theme;

@@ -1,5 +1,5 @@
-# Unit tests on every push and pull request (fast: no sample download needed), and the native
-# plugin helper built and checked against the bundled Dexed on every platform.
+# Unit tests on every push and pull request (fast: no sample download needed), the native plugin
+# helper built and checked against the bundled Dexed on every platform, and the in-app suites on Linux.
 name: CI
 
 on:
@@ -9,24 +9,51 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Install ffmpeg (checks our FLAC and MP3 files decode)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install dependencies (skip the sample download)
         run: npm ci --ignore-scripts
       - name: Unit tests
         run: npm test
+
+  app:
+    name: In-app suites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache sample library
+        uses: actions/cache@v4
+        with:
+          path: assets/samples
+          key: samples-${{ hashFiles('src/engine/sample-manifest.js', 'scripts/fetch-samples.mjs') }}
+      - name: Install dependencies (and fetch samples)
+        run: npm ci
+      - name: Install what Electron needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3 libatk-bridge2.0-0t64 libgtk-3-0t64 libgbm1 libasound2t64 libxss1 libxtst6
+      - uses: ./.github/actions/plugin-host
+      - name: End-to-end flows
+        run: npm run smoke
+      - name: Native engine
+        run: npm run test:native
 
   plugin-host:
     name: Plugin helper (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
