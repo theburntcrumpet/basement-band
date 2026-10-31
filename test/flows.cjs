@@ -1261,6 +1261,370 @@ module.exports = async function flows(win, app) {
     app.settings.smartPanels = null;
     return narrow.length && fits && opened && closed ? 'ok ' + narrow : JSON.stringify({ narrow, fits, opened, closed });`);
 
+  await check('piano roll highlights a scale and locks notes to it', `
+    const { newTrack, newMidiRegion } = await import('./state.js');
+    let t, r;
+    store.update(() => {
+      t = newTrack('instrument'); r = newMidiRegion(0, 8, []);
+      t.regions.push(r); store.project.tracks.push(t); store.ui.selectedTrack = t.id;
+      store.project.key = { root: 0, scale: 'major' };
+      delete store.project.scaleGuide;
+    });
+    app.openEditor(r.id); app.refresh();
+    const ed = app.editor;
+    const wait = () => new Promise(res => requestAnimationFrame(() => res()));
+    await wait();
+    const rect = () => ed.grid.getBoundingClientRect();
+    const rowColour = midi => {
+      const ratio = ed.grid.width / rect().width;
+      const d = ed.grid.getContext('2d').getImageData(Math.round(200 * ratio), Math.round((ed.rowY(midi) + 7) * ratio), 1, 1).data;
+      return [d[0], d[1], d[2]].join();
+    };
+    const fails = [];
+    // Follows the song key by default, whatever colour of key the row is.
+    const colours = () => [rowColour(60), rowColour(61), rowColour(62)];
+    let [root, out, inside] = colours();
+    if (root === inside || out === inside) fails.push('C major rows ' + [root, out, inside]);
+    // A chosen scale and root: D minor pentatonic has F (a white key) in and F# out.
+    ed.setScaleGuide({ scale: 'minorPentatonic', root: 2 });
+    await wait();
+    if (rowColour(62) === rowColour(64 + 1 + 1)) fails.push('root not distinct');
+    if (rowColour(65) === rowColour(66)) fails.push('F and F# look the same in D minor pentatonic');
+    if (rowColour(64) === rowColour(65)) fails.push('E is out of the scale, F is in');
+    // Off clears the highlight; the old black/white rows come back.
+    ed.setScaleGuide({ scale: 'off' });
+    await wait();
+    if (rowColour(62) !== rowColour(64)) fails.push('off left a highlight');
+    // Locked, the pencil draws on the nearest note of the scale.
+    ed.setScaleGuide({ scale: 'major', root: 0, lock: true });
+    ed.setTool('pencil');
+    const at = (beat, midi) => ({ bubbles: true, button: 0, clientX: rect().left + beat * ed.ppb + 2, clientY: rect().top + ed.rowY(midi) + 5 });
+    const click = (beat, midi) => {
+      ed.grid.dispatchEvent(new MouseEvent('mousedown', at(beat, midi)));
+      window.dispatchEvent(new MouseEvent('mouseup', at(beat, midi)));
+    };
+    const pitches = () => store.findRegion(r.id).region.notes.map(n => n.n).join();
+    click(0, 61);
+    if (pitches() !== '62') fails.push('pencil on C# drew ' + pitches());
+    // Drawing onto a row that snaps to an existing note grabs that note instead of stacking another.
+    click(0, 61);
+    if (pitches() !== '62') fails.push('stacked a note: ' + pitches());
+    // Dragging a note keeps it on the scale.
+    const note = store.findRegion(r.id).region.notes[0];
+    ed.setTool('pointer');
+    ed.grid.dispatchEvent(new MouseEvent('mousedown', at(0.25, 62)));
+    window.dispatchEvent(new MouseEvent('mousemove', at(0.25, 66)));
+    window.dispatchEvent(new MouseEvent('mouseup', at(0.25, 66)));
+    const live = () => store.findRegion(r.id).region.notes[0];
+    if (live().n !== 67) fails.push('drag to F# landed on ' + live().n);
+    // Arrow keys walk the scale, and Shift's octave stays an octave.
+    ed.selected = new Set([live()]);
+    ed.nudge(0, 1);
+    if (live().n !== 69) fails.push('nudge up reached ' + live().n);
+    ed.nudge(0, -12);
+    if (live().n !== 57) fails.push('octave reached ' + live().n);
+    // A note outside the scale stays put until moved, and moving it in time doesn't pull it in.
+    store.update(() => { live().n = 61; });
+    ed.selected = new Set([live()]);
+    ed.grid.dispatchEvent(new MouseEvent('mousedown', at(0.25, 61)));
+    window.dispatchEvent(new MouseEvent('mousemove', at(1.25, 61)));
+    window.dispatchEvent(new MouseEvent('mouseup', at(1.25, 61)));
+    if (live().n !== 61 || live().t !== 1) fails.push('time move changed it: ' + JSON.stringify(live()));
+    // Without the lock, pitch is free again.
+    ed.setScaleGuide({ lock: false });
+    ed.setTool('pencil');
+    click(4, 61);
+    if (!pitches().endsWith(',61')) fails.push('unlocked pencil: ' + pitches());
+    // Saved with the song and part of undo.
+    const saved = JSON.parse(JSON.stringify(store.project)).scaleGuide;
+    if (saved.scale !== 'major' || saved.root !== 0) fails.push('not saved ' + JSON.stringify(saved));
+    const keyTools = [...ed.tools.querySelectorAll('label')].map(l => l.textContent);
+    if (!keyTools.some(l => l.includes('Lock'))) fails.push('no lock control');
+    // Drums have no scale controls or shading.
+    let d, dr;
+    store.update(() => { d = newTrack('drums'); dr = newMidiRegion(0, 4, []); d.regions.push(dr); store.project.tracks.push(d); store.ui.selectedTrack = d.id; });
+    app.openEditor(dr.id); app.refresh();
+    await wait();
+    if ([...ed.tools.querySelectorAll('label')].some(l => l.textContent.includes('Scale'))) fails.push('scale control on drums');
+    store.update(() => { delete store.project.scaleGuide; });
+    return fails.length ? fails.join('; ') : 'ok';`);
+  await check('the scale controls fit the toolbar on a small monitor', `
+    const { newTrack, newMidiRegion } = await import('./state.js');
+    let r;
+    store.update(() => { const t = newTrack('instrument'); r = newMidiRegion(0, 4, [{ t: 0, d: 1, n: 60, v: 0.8 }]); t.regions.push(r); store.project.tracks.push(t); store.ui.selectedTrack = t.id; });
+    app.openEditor(r.id); app.refresh();
+    app.editor.setScaleGuide({ scale: 'harmonicMinor', root: 9, lock: true });
+    // 1366 wide with the library open, the widest set of controls.
+    const bar = document.querySelector('#bottom-bar');
+    bar.style.width = '1096px';
+    const tools = app.editor.tools;
+    const controls = [...tools.children].filter(el => !el.classList.contains('editor-hint'));
+    const needed = controls[controls.length - 1].getBoundingClientRect().right;
+    const room = tools.getBoundingClientRect().right;
+    const oneLine = [...tools.querySelectorAll('label')].every(l => l.getBoundingClientRect().height < 34);
+    bar.style.width = '';
+    return needed <= room + 1 && oneLine ? 'ok ' + Math.round(room - needed) + ' px spare' : 'needs ' + Math.round(needed - room) + ' px more, one line: ' + oneLine;`);
+  await new Promise(r => setTimeout(r, 200));
+  await shot('scale');
+  await js(`store.update(() => { delete store.project.scaleGuide; });`);
+
+  await check('notes can be shortened from either end', `
+    const { newTrack, newMidiRegion } = await import('./state.js');
+    let r;
+    store.update(() => {
+      const t = newTrack('instrument'); r = newMidiRegion(0, 8, [{ t: 1, d: 2, n: 60, v: 0.8 }]);
+      t.regions.push(r); store.project.tracks.push(t); store.ui.selectedTrack = t.id;
+    });
+    app.openEditor(r.id); app.refresh();
+    const ed = app.editor;
+    ed.setTool('pointer');
+    ed.snap = 0.25; ed.ppb = 90;
+    app.refresh();
+    await new Promise(res => requestAnimationFrame(() => res()));
+    const rect = () => ed.grid.getBoundingClientRect();
+    const at = beatPx => ({ bubbles: true, button: 0, clientX: rect().left + beatPx, clientY: rect().top + ed.rowY(60) + 5 });
+    const dragFrom = (a, b) => {
+      ed.grid.dispatchEvent(new MouseEvent('mousedown', at(a)));
+      window.dispatchEvent(new MouseEvent('mousemove', at(b)));
+      window.dispatchEvent(new MouseEvent('mouseup', at(b)));
+    };
+    const note = () => store.findRegion(r.id).region.notes[0];
+    const fails = [];
+    // The left edge moves the start and leaves the end.
+    dragFrom(92, 92 + 45);
+    if (note().t !== 1.5 || note().d !== 1.5) fails.push('start edge: ' + JSON.stringify(note()));
+    store.undo();
+    // It can grow backwards too, but not past the region's start.
+    dragFrom(92, 92 - 900);
+    if (note().t !== 0 || note().d !== 3) fails.push('grow back: ' + JSON.stringify(note()));
+    store.undo();
+    // It stops a snap short of the end.
+    dragFrom(92, 92 + 900);
+    if (note().t !== 2.75 || note().d !== 0.25) fails.push('past the end: ' + JSON.stringify(note()));
+    store.undo();
+    // The right edge still resizes and the middle still moves.
+    dragFrom(90 * 3 - 2, 90 * 3 - 2 + 45);
+    if (note().t !== 1 || note().d !== 2.5) fails.push('end edge: ' + JSON.stringify(note()));
+    store.undo();
+    dragFrom(90 * 2, 90 * 2 + 90);
+    if (note().t !== 2 || note().d !== 2) fails.push('middle: ' + JSON.stringify(note()));
+    store.undo();
+    // A selection trims together, each keeping its own end.
+    store.update(() => { store.findRegion(r.id).region.notes.push({ t: 4, d: 2, n: 60, v: 0.8 }); });
+    ed.selected = new Set(store.findRegion(r.id).region.notes);
+    dragFrom(92, 92 + 45);
+    const [a, b] = store.findRegion(r.id).region.notes;
+    if (a.t !== 1.5 || a.d !== 1.5 || b.t !== 4.5 || b.d !== 1.5) fails.push('selection: ' + JSON.stringify([a, b]));
+    // A very short note can still be moved rather than only resized.
+    if (ed.noteEdge({ t: 0, d: 0.25, n: 60 }, 11) !== null) fails.push('no middle on a 1/16 note');
+    if (ed.noteEdge({ t: 0, d: 0.05, n: 60 }, 1) !== null) fails.push('tiny note has an edge');
+    return fails.length ? fails.join('; ') : 'ok';`);
+  await check('clips trim from the start with the audio staying put, in the arrangement and the editor', `
+    const { newTrack, trimClipStart } = await import('./state.js');
+    const { audioSegments } = await import('./engine/engine.js');
+    const ctx = new OfflineAudioContext(1, 48000 * 8, 48000);
+    const buffer = ctx.createBuffer(1, 48000 * 8, 48000);
+    app.engine.audioPool.set('trim', buffer);
+    let t;
+    store.update(() => {
+      store.project.bpm = 120;
+      t = newTrack('audio');
+      t.regions.push({ id: 'trimclip', start: 4, length: 8, loopLength: 8, offset: 0, audioId: 'trim' });
+      store.project.tracks.push(t); store.ui.selectedTrack = t.id;
+    });
+    const clip = () => store.findRegion('trimclip').region;
+    const fails = [];
+    // Where in the recording a song position plays: must not change when the start is trimmed.
+    const recordingAt = (r, beat) => {
+      for (const s of audioSegments(r)) if (beat >= s.at - 1e-9 && beat < s.at + s.length - 1e-9) return (r.offset || 0) + (s.into + beat - s.at) * 0.5;
+      return null;
+    };
+    app.refresh();
+    const el = () => document.querySelector('.region[data-id="trimclip"]');
+    const handle = () => el().querySelector('.handle-start');
+    const dragHandle = (target, px) => {
+      const b = target.getBoundingClientRect();
+      const o = { bubbles: true, button: 0, clientX: b.left + 2, clientY: b.top + b.height / 2 };
+      target.dispatchEvent(new MouseEvent('mousedown', o));
+      window.dispatchEvent(new MouseEvent('mousemove', { ...o, clientX: o.clientX + px }));
+      window.dispatchEvent(new MouseEvent('mouseup', { ...o, clientX: o.clientX + px }));
+    };
+    const zoom = app.arrange.zoom;
+    const before = recordingAt(clip(), 8);
+    // Trimming a bar off a clip that starts at beat 4 starts it at 8.
+    dragHandle(handle(), 4 * zoom);
+    if (Math.abs(clip().start - 8) > 1e-6 || Math.abs(clip().length - 4) > 1e-6) fails.push('arrange trim: ' + JSON.stringify(clip()));
+    if (Math.abs(clip().offset - 2) > 1e-6) fails.push('offset ' + clip().offset);
+    if (Math.abs(recordingAt(clip(), 8) - before) > 1e-6) fails.push('audio moved');
+    if (Math.abs(clip().loopLength - clip().length) > 1e-6) fails.push('loop length ' + clip().loopLength);
+    // Dragging back out restores it, and stops where the recording begins.
+    dragHandle(handle(), -40 * zoom);
+    if (Math.abs(clip().start - 4) > 1e-6 || Math.abs(clip().offset) > 1e-6 || Math.abs(clip().length - 8) > 1e-6) fails.push('restore: ' + JSON.stringify(clip()));
+    store.undo(); store.undo();
+    if (clip().start !== 4 || clip().offset !== 0) fails.push('undo: ' + JSON.stringify(clip()));
+    // A looped clip keeps playing the same thing at the same place.
+    store.update(() => { const r = clip(); r.loopLength = 2; r.length = 8; });
+    const loopedBefore = [8, 9, 10.5].map(b => recordingAt(clip(), b));
+    trimClipStart(clip(), 7, store.project, { ...clip() });
+    const loopedAfter = [8, 9, 10.5].map(b => recordingAt(clip(), b));
+    if (loopedBefore.join() !== loopedAfter.join()) fails.push('looped moved: ' + loopedBefore + ' / ' + loopedAfter);
+    store.undo();
+    store.update(() => { const r = clip(); r.start = 4; r.length = 8; r.loopLength = 8; r.offset = 0; r.phase = 0; });
+    // The clip's editor: handles on the whole recording, kept in place while dragging.
+    app.openEditor('trimclip');
+    await new Promise(res => requestAnimationFrame(() => res()));
+    await new Promise(res => requestAnimationFrame(() => res()));
+    const view = document.querySelector('.clip-view');
+    if (!view) return 'no clip view';
+    if (document.querySelector('#bottom-tools').textContent.includes('Start offset')) fails.push('offset slider still there');
+    const start = () => view.querySelector('.clip-handle.start'), end = () => view.querySelector('.clip-handle.end'), win = () => view.querySelector('.clip-window');
+    const secs = s => s / 8 * view.clientWidth;
+    const startEl = start();
+    dragHandle(start(), secs(1));
+    if (document.querySelector('.clip-view') !== view || start() !== startEl) fails.push('view rebuilt during a drag');
+    if (Math.abs(clip().offset - 1) > 0.02 || Math.abs(clip().start - 6) > 0.04 || Math.abs(clip().length - 6) > 0.04) fails.push('editor start: ' + JSON.stringify(clip()));
+    const audioNow = recordingAt(clip(), 8);
+    if (Math.abs(audioNow - 2) > 0.02) fails.push('audio moved in editor: ' + audioNow);
+    dragHandle(end(), -secs(1));
+    if (Math.abs(clip().length - 4) > 0.06) fails.push('editor end: ' + JSON.stringify(clip()));
+    // The middle slides what plays, and the clip stays where it is.
+    const { start: s0, length: l0, offset: o0 } = clip();
+    const w = win().getBoundingClientRect();
+    win().dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: w.left + w.width / 2, clientY: w.top + 20 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: w.left + w.width / 2 + secs(0.5), clientY: w.top + 20 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: w.left + w.width / 2 + secs(0.5), clientY: w.top + 20 }));
+    if (Math.abs(clip().offset - o0 - 0.5) > 0.02 || clip().start !== s0 || clip().length !== l0) fails.push('slide: ' + JSON.stringify(clip()));
+    // Can't drag past the ends of the recording, or the handles past each other.
+    dragHandle(start(), secs(100));
+    if (clip().length <= 0) fails.push('start past end: ' + JSON.stringify(clip()));
+    dragHandle(end(), secs(100));
+    const tail = clip().offset + clip().length * 0.5;
+    if (Math.abs(tail - 8) > 0.02) fails.push('end past the recording reaches ' + tail);
+    return fails.length ? fails.join('; ') : 'ok';`);
+  await new Promise(r => setTimeout(r, 200));
+  await shot('clip-editor');
+  await check('chord wheel: hear a chord, draw it, arpeggiate it', `
+    const { newTrack, newMidiRegion } = await import('./state.js');
+    let t, r;
+    store.update(() => {
+      t = newTrack('instrument'); r = newMidiRegion(0, 16, []);
+      t.regions.push(r); store.project.tracks.push(t); store.ui.selectedTrack = t.id;
+      store.project.key = { root: 0, scale: 'major' };
+      delete store.project.scaleGuide;
+    });
+    const ed = app.editor;
+    const wait = () => new Promise(res => requestAnimationFrame(() => res()));
+    const fails = [];
+    // Five tabs still fit the panel.
+    const tabs = document.querySelector('#library .tabs');
+    if (tabs.scrollWidth > tabs.clientWidth + 1) fails.push('tabs overflow by ' + (tabs.scrollWidth - tabs.clientWidth));
+    if ([...tabs.children].some(b => b.scrollWidth > b.clientWidth + 1)) fails.push('a tab label is cut off');
+    app.bottomMode = 'smart'; app.renderBottom();
+    document.querySelector('#library .tabs [data-tab=chords]').click();
+    const seg = name => document.querySelector('.chord-seg[data-chord="' + name + '"]');
+    const names = () => [...document.querySelectorAll('.chord-seg')].map(s => s.dataset.chord).join();
+    if (names() !== 'C,G,Dm,Am,Em,Bdim,F') fails.push('C major wheel: ' + names());
+    // Bigger chords, and an armed chord follows along to its bigger version.
+    const chip = label => [...document.querySelectorAll('.chords-tab .chip')].find(b => b.textContent === label);
+    chip('7ths').click();
+    if (names() !== 'Cmaj7,G7,Dm7,Am7,Em7,Bm7b5,Fmaj7') fails.push('sevenths: ' + names());
+    seg('Am7').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    chip('Triads').click();
+    if (ed.chord?.name !== 'Am') fails.push('armed chord became ' + ed.chord?.name);
+    ed.armChord(null);
+    // Picking a chord brings up the piano roll with the Pencil armed, whatever was showing.
+    seg('Am').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    if (app.bottomMode !== 'editor' || ed.regionId !== r.id) fails.push('editor not opened: ' + app.bottomMode);
+    if (ed.tool !== 'pencil' || ed.chord?.name !== 'Am') fails.push('not armed: ' + ed.tool);
+    if (!seg('Am').classList.contains('on')) fails.push('Am not marked');
+    await wait();
+    const rect = () => ed.grid.getBoundingClientRect();
+    const at = (beat, midi) => ({ bubbles: true, button: 0, clientX: rect().left + beat * ed.ppb + 2, clientY: rect().top + ed.rowY(midi) + 5 });
+    const draw = (from, to, midi) => {
+      ed.grid.dispatchEvent(new MouseEvent('mousedown', at(from, midi)));
+      if (to != null) { window.dispatchEvent(new MouseEvent('mousemove', at(to, midi))); window.dispatchEvent(new MouseEvent('mouseup', at(to, midi))); }
+      else window.dispatchEvent(new MouseEvent('mouseup', at(from, midi)));
+    };
+    const notes = () => store.findRegion(r.id).region.notes.map(n => [n.t, n.d, n.n].join(':')).sort().join(' ');
+    // A click draws a bar of it near the row clicked; the notes are selected.
+    draw(0, null, 60);
+    if (notes() !== '0:4:57 0:4:60 0:4:64') fails.push('click drew ' + notes());
+    if (ed.selected.size !== 3) fails.push('selected ' + ed.selected.size);
+    // One undo removes the whole chord.
+    store.undo();
+    if (notes() !== '') fails.push('undo left ' + notes());
+    // Dragging sets the length, and later clicks reuse it.
+    draw(0, 2, 60);
+    if (notes() !== '0:2:57 0:2:60 0:2:64') fails.push('drag drew ' + notes());
+    store.undo();
+    // Arpeggios fill the span at the chosen speed.
+    ed.chordStyle = 'up'; ed.chordStep = 0.5;
+    draw(4, 6, 60);
+    if (notes() !== '4.5:0.5:60 4:0.5:57 5.5:0.5:57 5:0.5:64') fails.push('arpeggio drew ' + notes());
+    store.undo();
+    // A rhythm fills the bar, picked from the menu.
+    const menu = document.querySelector('.chords-tab select[title^="What drawing"]');
+    menu.value = 'offbeat';
+    menu.dispatchEvent(new Event('change'));
+    ed.chordLength = null;
+    draw(0, null, 60);
+    const starts = [...new Set(store.findRegion(r.id).region.notes.map(n => n.t))].join();
+    if (starts !== '0.5,1.5,2.5,3.5') fails.push('off-beats at ' + starts);
+    store.undo();
+    if (!seg('Am').classList.contains('on')) seg('Am').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ed.chordStyle = 'block'; ed.chordLength = null;
+    // Drawing over an existing note keeps it and doesn't stack a copy on it.
+    store.update(() => { store.findRegion(r.id).region.notes.push({ t: 0, d: 1, n: 60, v: 0.8 }); });
+    draw(0, null, 60);
+    if (notes() !== '0:1:60 0:4:57 0:4:64') fails.push('over a note: ' + notes());
+    store.update(() => { store.findRegion(r.id).region.notes = []; });
+    // Clicking the chord again, or another tool, goes back to single notes.
+    seg('Am').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    if (ed.chord) fails.push('second click left it armed');
+    seg('Dm').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ed.setTool('pointer');
+    if (ed.chord || seg('Dm').classList.contains('on')) fails.push('pointer left it armed');
+    // A change of scale redraws the wheel and drops a chord that left it.
+    seg('G').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    ed.setScaleGuide({ scale: 'harmonicMinor', root: 9 });
+    await wait();
+    if (!names().includes('Caug') || ed.chord) fails.push('harmonic minor: ' + names() + ' armed ' + ed.chord?.name);
+    // Switching the highlight off leaves the wheel on the song's key.
+    ed.setScaleGuide({ scale: 'off' });
+    await wait();
+    if (!names().startsWith('C,G')) fails.push('off: ' + names());
+    // Whole-tone and diminished still draw a usable wheel.
+    ed.setScaleGuide({ scale: 'diminished', root: 0 });
+    await wait();
+    if (document.querySelectorAll('.chord-seg').length !== 8) fails.push('diminished: ' + names());
+    ed.setScaleGuide({ scale: 'major', root: 0 });
+    await wait();
+    // Drums don't take chords.
+    let dr;
+    store.update(() => { const d = newTrack('drums'); dr = newMidiRegion(0, 4, []); d.regions.push(dr); store.project.tracks.push(d); });
+    seg('Am').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    app.openEditor(dr.id); app.refresh();
+    await wait();
+    draw(0, null, ed.rows[0]);
+    const drum = store.findRegion(dr.id).region.notes;
+    if (drum.length !== 1) fails.push('drum hits: ' + drum.length);
+    ed.setTool('pointer');
+    app.openEditor(r.id); app.refresh();
+    seg('G').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return fails.length ? fails.join('; ') : 'ok';`);
+  await new Promise(r => setTimeout(r, 200));
+  await shot('chords');
+  await js(`document.documentElement.dataset.theme = 'light'; app.editor.render();`);
+  await new Promise(r => setTimeout(r, 200));
+  await shot('chords-light');
+  await js(`document.documentElement.dataset.theme = 'dark'; app.editor.render();
+    app.editor.chordSize = 5; app.editor.chordStyle = 'up';
+    app.editor.setScaleGuide({ scale: 'harmonicMinor', root: 9 });`);
+  await new Promise(r => setTimeout(r, 200));
+  await shot('chords-ninths');
+  await js(`app.editor.chordSize = 3; app.editor.chordStyle = 'block';`);
+  await js(`app.editor.setTool('pointer'); store.update(() => { delete store.project.scaleGuide; }); app.library.show('sounds');`);
+
   console.log('\n' + results.join('\n'));
   app.quit();
 };

@@ -7,7 +7,77 @@ const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 export const SCALES = {
   major: [0, 2, 4, 5, 7, 9, 11],
   minor: [0, 2, 3, 5, 7, 8, 10],
+  harmonicMinor: [0, 2, 3, 5, 7, 8, 11],
+  melodicMinor: [0, 2, 3, 5, 7, 9, 11],
+  dorian: [0, 2, 3, 5, 7, 9, 10],
+  phrygian: [0, 1, 3, 5, 7, 8, 10],
+  lydian: [0, 2, 4, 6, 7, 9, 11],
+  mixolydian: [0, 2, 4, 5, 7, 9, 10],
+  locrian: [0, 1, 3, 5, 6, 8, 10],
+  majorPentatonic: [0, 2, 4, 7, 9],
+  minorPentatonic: [0, 3, 5, 7, 10],
+  blues: [0, 3, 5, 6, 7, 10],
+  majorBlues: [0, 2, 3, 4, 7, 9],
+  suspendedPentatonic: [0, 2, 5, 7, 10],
+  lydianDominant: [0, 2, 4, 6, 7, 9, 10],
+  altered: [0, 1, 3, 4, 6, 8, 10],
+  bebopDominant: [0, 2, 4, 5, 7, 9, 10, 11],
+  bebopMajor: [0, 2, 4, 5, 7, 8, 9, 11],
+  wholeTone: [0, 2, 4, 6, 8, 10],
+  diminished: [0, 2, 3, 5, 6, 8, 9, 11],
+  halfWhole: [0, 1, 3, 4, 6, 7, 9, 10],
+  phrygianDominant: [0, 1, 4, 5, 7, 8, 10],
+  doubleHarmonic: [0, 1, 4, 5, 7, 8, 11],
+  hungarianMinor: [0, 2, 3, 6, 7, 8, 11],
+  neapolitanMinor: [0, 1, 3, 5, 7, 8, 11],
+  neapolitanMajor: [0, 1, 3, 5, 7, 9, 11],
+  persian: [0, 1, 4, 5, 6, 8, 11],
+  hirajoshi: [0, 2, 3, 7, 8],
+  inSen: [0, 1, 5, 7, 10],
+  yo: [0, 2, 5, 7, 9],
 };
+
+export const SCALE_LABELS = {
+  major: 'Major',
+  minor: 'Minor',
+  harmonicMinor: 'Harmonic minor',
+  melodicMinor: 'Melodic minor',
+  dorian: 'Dorian',
+  phrygian: 'Phrygian',
+  lydian: 'Lydian',
+  mixolydian: 'Mixolydian',
+  locrian: 'Locrian',
+  majorPentatonic: 'Major pentatonic',
+  minorPentatonic: 'Minor pentatonic',
+  blues: 'Minor blues',
+  majorBlues: 'Major blues',
+  suspendedPentatonic: 'Suspended pent.',
+  lydianDominant: 'Lydian dominant',
+  altered: 'Altered',
+  bebopDominant: 'Bebop dominant',
+  bebopMajor: 'Bebop major',
+  wholeTone: 'Whole tone',
+  diminished: 'Diminished',
+  halfWhole: 'Half-whole dim.',
+  phrygianDominant: 'Phrygian dominant',
+  doubleHarmonic: 'Double harmonic',
+  hungarianMinor: 'Hungarian minor',
+  neapolitanMinor: 'Neapolitan minor',
+  neapolitanMajor: 'Neapolitan major',
+  persian: 'Persian',
+  hirajoshi: 'Hirajoshi',
+  inSen: 'In Sen',
+  yo: 'Yo',
+};
+
+// How the scale menus group them.
+export const SCALE_GROUPS = [
+  ['Major and minor', ['major', 'minor', 'harmonicMinor', 'melodicMinor']],
+  ['Modes', ['dorian', 'phrygian', 'lydian', 'mixolydian', 'locrian']],
+  ['Pentatonic and blues', ['majorPentatonic', 'minorPentatonic', 'blues', 'majorBlues', 'suspendedPentatonic']],
+  ['Jazz', ['lydianDominant', 'altered', 'bebopDominant', 'bebopMajor', 'wholeTone', 'diminished', 'halfWhole']],
+  ['World', ['phrygianDominant', 'doubleHarmonic', 'hungarianMinor', 'neapolitanMinor', 'neapolitanMajor', 'persian', 'hirajoshi', 'inSen', 'yo']],
+];
 
 export function midiToNote(midi) {
   return NOTE_NAMES[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
@@ -184,4 +254,159 @@ export function voiceChord(chord, prev, { low = 52, high = 76, size = 4 } = {}) 
 
 export function scaleNotes(key) {
   return SCALES[key.scale || 'major'].map(i => (key.root + i) % 12);
+}
+
+// The scale a song's piano roll shows: its own choice, or its key. Null when switched off.
+export function guideKey({ key, scaleGuide: guide }) {
+  if (guide?.scale === 'off') return null;
+  return SCALES[guide?.scale] ? { root: guide.root, scale: guide.scale } : key;
+}
+
+// Tried in order on each scale note: the first whose notes all belong to the scale is its chord.
+const CHORD_SHAPES = [
+  { suffix: '', intervals: [0, 4, 7], quality: 'major' },
+  { suffix: 'm', intervals: [0, 3, 7], quality: 'minor' },
+  { suffix: 'dim', intervals: [0, 3, 6], quality: 'dim', mark: '°' },
+  { suffix: 'aug', intervals: [0, 4, 8], quality: 'aug', mark: '+' },
+  { suffix: 'sus4', intervals: [0, 5, 7], quality: 'sus' },
+  { suffix: 'sus2', intervals: [0, 2, 7], quality: 'sus' },
+  { suffix: '5', intervals: [0, 7], quality: 'power' },
+];
+// What a seventh or ninth on top of each triad is called.
+const SEVENTHS = {
+  major: { 11: 'maj7', 10: '7', 9: '6' },
+  minor: { 11: 'mMaj7', 10: 'm7', 9: 'm6' },
+  dim: { 10: 'm7b5', 9: 'dim7' },
+  aug: { 11: 'augMaj7', 10: 'aug7' },
+  sus: { 11: 'maj7', 10: '7' },
+};
+const NINTHS = { maj7: 'maj9', 7: '9', m7: 'm9', mMaj7: 'mMaj9', 6: '6/9', m6: 'm6/9' };
+const NUMERALS = ['I', 'bII', 'II', 'bIII', 'III', 'IV', 'bV', 'V', 'bVI', 'VI', 'bVII', 'VII'];
+// Scale degrees going round by fifths, starting from the home chord.
+const FIFTHS_ORDER = [0, 4, 1, 5, 2, 6, 3];
+
+// Adds the seventh (and ninth) the scale offers to a triad, as far as `size` notes.
+function extendChord(shape, pcs, root, size) {
+  const has = i => pcs.includes((root + i) % 12);
+  const names = SEVENTHS[shape.quality];
+  let { intervals, suffix } = shape;
+  if (size < 4 || !names) return { intervals, suffix };
+  const seventh = [11, 10, 9].find(i => has(i) && names[i]);
+  if (seventh == null) return { intervals, suffix };
+  const name = names[seventh];
+  intervals = [...intervals, seventh];
+  // sus chords name the suspension after the seventh: G7sus4.
+  suffix = shape.quality === 'sus' ? name + suffix : name;
+  if (size < 5) return { intervals, suffix };
+  const ninth = [14, 13, 15].find(has);
+  if (ninth == null) return { intervals, suffix };
+  intervals = [...intervals, ninth];
+  suffix = ninth === 14 && NINTHS[name] && shape.quality !== 'sus' ? NINTHS[name] : `${suffix}(${{ 14: '9', 13: 'b9', 15: '#9' }[ninth]})`;
+  return { intervals, suffix };
+}
+
+// The chords a scale contains, ready to lay out on the wheel. `size` asks for that many notes in each
+// (3 triads, 4 sevenths, 5 ninths), as far as the scale allows; scale notes with no chord are left out.
+export function scaleChords(key, size = 3) {
+  const pcs = scaleNotes(key);
+  const chords = [];
+  for (const step of SCALES[key.scale || 'major']) {
+    const root = (key.root + step) % 12;
+    const shape = CHORD_SHAPES.find(s => s.intervals.every(i => pcs.includes((root + i) % 12)));
+    if (!shape) continue;
+    const lower = shape.quality === 'minor' || shape.quality === 'dim';
+    const { intervals, suffix } = extendChord(shape, pcs, root, size);
+    chords.push({
+      root,
+      intervals,
+      quality: shape.quality,
+      name: KEY_NAMES[root] + suffix,
+      numeral: (lower ? NUMERALS[step].replace(/[IV]+/, m => m.toLowerCase()) : NUMERALS[step]) + (shape.mark || ''),
+    });
+  }
+  return goesByFifths(key, chords) ? FIFTHS_ORDER.map(i => chords[i]) : chords;
+}
+
+// Only a seven-note scale with a chord on every note can go round the wheel by fifths.
+export function goesByFifths(key, chords) {
+  return SCALES[key.scale || 'major'].length === 7 && chords.length === 7;
+}
+
+// The chord's notes with its root as close to `target` as the piano's range allows.
+export function chordPitches(chord, target, low = 21, high = 108) {
+  let root = nearest(chord.root, target);
+  while (root + chord.intervals[chord.intervals.length - 1] > high) root -= 12;
+  while (root < low) root += 12;
+  return chord.intervals.map(i => root + i);
+}
+
+// The ways a chord can be drawn. Rhythms are a 4/4 bar of 16ths: C a strong chord, c a soft one, b the
+// root an octave down, - holds the last hit, . is a rest. Other bar lengths use the bar's first part.
+export const ARPEGGIOS = ['up', 'down', 'updown'];
+export const CHORD_PATTERNS = [
+  { id: 'block', label: 'Held chord' },
+  { id: 'quarters', group: 'Rhythm', label: 'Steady beats', steps: 'C-..c-..C-..c-..' },
+  { id: 'eighths', group: 'Rhythm', label: 'Driving eighths', steps: 'C.c.c.c.C.c.c.c.' },
+  { id: 'pop', group: 'Rhythm', label: 'Pop pulse', steps: 'C--c--c-C--c--c-' },
+  { id: 'ballad', group: 'Rhythm', label: 'Ballad', steps: 'b---c---c---c---' },
+  { id: 'oompah', group: 'Rhythm', label: 'Oom-pah', steps: 'b-..c-..b-..c-..' },
+  { id: 'offbeat', group: 'Rhythm', label: 'Off-beats', steps: '..c...c...c...c.' },
+  { id: 'syncopated', group: 'Rhythm', label: 'Syncopated', steps: 'C--c--c---c-c---' },
+  { id: 'funk', group: 'Rhythm', label: 'Funk stabs', steps: 'C.c..c.cC..c.c..' },
+  { id: 'up', group: 'Arpeggio', label: 'Up' },
+  { id: 'down', group: 'Arpeggio', label: 'Down' },
+  { id: 'updown', group: 'Arpeggio', label: 'Up and down' },
+];
+const STEP = 0.25, GATE = 0.9;
+
+// One bar of a rhythm after another across `span`, cut off at the end of it.
+function rhythmNotes(pitches, steps, span, bar) {
+  const count = Math.min(steps.length, Math.round(bar / STEP));
+  const low = pitches[0] >= 33 ? pitches[0] - 12 : pitches[0];
+  const notes = [];
+  for (let at = 0; at < span - 1e-6; at += bar) {
+    for (let i = 0; i < count; i++) {
+      const hit = steps[i];
+      if (hit !== 'C' && hit !== 'c' && hit !== 'b') continue;
+      const t = at + i * STEP;
+      if (t >= span - 1e-6) break;
+      let hold = 1;
+      while (i + hold < count && steps[i + hold] === '-') hold++;
+      const d = Math.min(hold * STEP * GATE, span - t);
+      if (hit === 'b') notes.push({ t, d, n: low, v: 0.85 });
+      else for (const n of pitches) notes.push({ t, d, n, v: hit === 'C' ? 0.85 : 0.68 });
+    }
+  }
+  return notes;
+}
+
+// Notes (beats from 0) playing the pitches across `span`: held, in a rhythm, or one at a time every `step`.
+export function chordNotes(pitches, { style = 'block', span, step = 0.5, velocity = 0.8, bar = 4 }) {
+  if (style === 'block') return pitches.map(n => ({ t: 0, d: span, n, v: velocity }));
+  const rhythm = CHORD_PATTERNS.find(p => p.id === style)?.steps;
+  if (rhythm) return rhythmNotes(pitches, rhythm, span, bar);
+  const order = style === 'down' ? [...pitches].reverse()
+    : style === 'updown' ? [...pitches, ...pitches.slice(1, -1).reverse()]
+      : pitches;
+  const notes = [];
+  for (let i = 0; i * step < span - 1e-6; i++) {
+    notes.push({ t: i * step, d: Math.min(step, span - i * step), n: order[i % order.length], v: velocity });
+  }
+  return notes;
+}
+
+// The scale note closest to `midi` inside the piano's range (a tie goes up).
+export function snapToScale(midi, pcs, low = 21, high = 108) {
+  for (let d = 0; d < 12; d++) {
+    for (const n of [midi + d, midi - d]) {
+      if (n >= low && n <= high && pcs.includes(n % 12)) return n;
+    }
+  }
+  return midi;
+}
+
+// The next scale note up (dir 1) or down (dir -1), or `midi` if there is none in range.
+export function stepInScale(midi, pcs, dir, low = 21, high = 108) {
+  for (let n = midi + dir; n >= low && n <= high; n += dir) if (pcs.includes(n % 12)) return n;
+  return midi;
 }

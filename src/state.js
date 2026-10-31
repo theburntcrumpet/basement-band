@@ -113,6 +113,31 @@ export function splitRegion(track, region, at, project) {
   return right;
 }
 
+// The earliest a clip's start can be dragged to: looped clips repeat back to the start of the song,
+// others stop where the recording begins.
+export function clipStartLimit(region, project) {
+  const loop = region.loopLength || region.length;
+  if (loop < region.length - 1e-6) return 0;
+  return Math.max(0, region.start - (region.offset || 0) / sourceSpb(region, project) - (region.phase || 0));
+}
+
+// Moves a clip's start to `start` with its audio staying where it is in the song: only what's cut off
+// (or brought back) changes. `base` is the clip as it was when the drag began.
+export function trimClipStart(region, start, project, base = region) {
+  const delta = start - base.start;
+  const loop = base.loopLength || base.length;
+  region.start = start;
+  region.length = base.length - delta;
+  if (loop < base.length - 1e-6) {
+    region.phase = ((((base.phase || 0) + delta) % loop) + loop) % loop;
+    region.loopLength = loop;
+    return;
+  }
+  region.offset = (base.offset || 0) + ((base.phase || 0) + delta) * sourceSpb(base, project);
+  region.phase = 0;
+  region.loopLength = region.length;
+}
+
 // Resizing (rather than looping) a region. `base` is the region as it was when the drag began, so
 // looped content is unrolled once and nothing is lost if the drag shrinks and then grows again.
 // Generated parts write new bars instead, with fills moving to the new end.

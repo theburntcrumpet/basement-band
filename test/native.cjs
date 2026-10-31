@@ -355,6 +355,59 @@ module.exports = async function native(win, app) {
     app.engine.project = store.project;
     return worst <= 1.5 ? 'ok loudness per 50 ms: ' + report.join('; ') : 'differences: ' + report.join('; ');`);
 
+  await check('a clip trimmed from the start plays the same audio at the same time, on both engines', `
+    const { renderProject } = await import('./engine/engine.js');
+    const { newProject, newTrack, trimClipStart } = await import('./state.js');
+    const { songForNative, renderNative } = await import('./engine/native-engine.js');
+    const rate = Tone.getContext().sampleRate;
+    // A recording whose level changes all the time, so a shift would show up.
+    const rec = new AudioBuffer({ length: rate * 5, sampleRate: rate, numberOfChannels: 1 });
+    const d = rec.getChannelData(0);
+    for (let i = 0; i < d.length; i++) { const t = i / rate; d[i] = 0.4 * Math.sin(2 * Math.PI * 220 * t) * (0.5 + 0.5 * Math.sin(2 * Math.PI * 1.7 * t)); }
+    app.engine.audioPool.set('trimrec', rec);
+    const project = region => {
+      const p = newProject(); p.bpm = 120;
+      const t = Object.assign(newTrack('audio', null, 'Clip'), { reverb: 0, echo: 0 });
+      t.regions.push({ id: 'r', offset: 0, audioId: 'trimrec', ...region });
+      p.tracks.push(t);
+      return p;
+    };
+    const render = async (p, native) => {
+      app.engine.project = p;
+      await app.engine.prepareAudio(p);
+      if (!native) return renderProject(p, app.engine.audioPool, { start: 0, end: 8, tail: 0, sampleRate: rate, bufferFor: app.engine.bufferFor });
+      await new Promise(r => setTimeout(r, 200));
+      return renderNative(songForNative(p, new Map(), { bufferFor: app.engine.bufferFor }), { start: 0, end: 8, tail: 0, sampleRate: rate });
+    };
+    const rms = (b, from, to) => {
+      const x = b.getChannelData(0); let e = 0, n = 0;
+      for (let i = Math.round(from * rate); i < Math.min(x.length, Math.round(to * rate)); i++) { e += x[i] * x[i]; n++; }
+      return Math.sqrt(e / Math.max(1, n));
+    };
+    const report = [];
+    const fails = [];
+    for (const [name, region] of [['plain', { start: 1, length: 6, loopLength: 6 }], ['looped', { start: 1, length: 6, loopLength: 2 }]]) {
+      for (const native of [false, true]) {
+        const whole = await render(project(region), native);
+        const p = project(region);
+        const clip = p.tracks[0].regions[0];
+        trimClipStart(clip, 3, p, { ...clip });
+        const trimmed = await render(p, native);
+        const engine = native ? 'native' : 'web';
+        // Silence where it was cut off (beats 1 to 3, 0.5 s to 1.5 s).
+        const cut = rms(trimmed, 0.55, 1.45);
+        if (cut > 1e-3) fails.push(name + ' ' + engine + ' still plays what was trimmed: ' + cut);
+        // Sample-for-sample after the cut (past the clip's short fade-in).
+        const a = whole.getChannelData(0), b = trimmed.getChannelData(0);
+        let worst = 0, level = 0;
+        for (let i = Math.round(1.55 * rate); i < Math.round(3.4 * rate); i++) { worst = Math.max(worst, Math.abs(a[i] - b[i])); level = Math.max(level, Math.abs(a[i])); }
+        if (level < 0.02 || worst > level * 0.02) fails.push(name + ' ' + engine + ' moved: difference ' + worst.toFixed(4) + ' of ' + level.toFixed(3));
+        report.push(name + ' ' + engine + ' ' + worst.toFixed(5));
+      }
+    }
+    app.engine.project = store.project;
+    return fails.length ? fails.join('; ') : 'ok worst difference: ' + report.join(', ');`);
+
   await check('native song engine matches the app: track and master effects', `
     const { renderProject, resolveInstrument } = await import('./engine/engine.js');
     const { newProject, newTrack } = await import('./state.js');

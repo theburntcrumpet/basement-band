@@ -54,6 +54,13 @@ open it and start making music.
 - **Editing**: piano roll and drum grid with Pointer, Pencil, Eraser and Box-select tools; copy,
   cut, paste and duplicate for notes and regions; Alt-drag to copy; the piano keys light up for
   selected notes; region loop/resize/split; undo/redo.
+- **Scales**: the piano roll highlights the song's key or any of 30 scales (modes, pentatonics, blues,
+  jazz and world scales) on any root. Lock to scale keeps drawn and moved notes on it, and the arrow keys walk it.
+- **Chord wheel**: the Chords tab shows the chords that belong to a scale, as triads, sevenths or ninths,
+  arranged so neighbours sound good together. Click one to hear it, then drag on the piano roll to draw
+  it as a held chord, a rhythm (pop pulse, oom-pah, funk stabs and more) or an arpeggio.
+- **Trimming**: drag either end of a note or an audio clip. A clip's audio stays where it is in the song,
+  and its editor shows the whole recording with handles to trim and slide what plays.
 - **Native audio engine**: songs play through a native engine (JACK/ALSA on Linux; WASAPI, ASIO or
   DirectSound on Windows) talking straight to your interface: instruments, plugins, mixer, effects,
   automation and the metronome, with only the interface's buffering as delay. Guitars monitor through
