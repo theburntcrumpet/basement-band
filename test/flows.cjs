@@ -1,19 +1,14 @@
-// Exercises editing flows end to end in the real app (headless).
-// BB_SMOKE=test/flows.cjs xvfb-run -a npx electron . --use-fake-device-for-media-stream --use-fake-ui-for-media-stream
+// Exercises editing flows end to end in the real app, with a stand-in for the native helper.
+// Run with `npm run smoke` (hidden X display, isolated settings).
 const fs = require('node:fs');
 const path = require('node:path');
+const harness = require('./harness.cjs');
 
 module.exports = async function flows(win, app) {
   const out = path.join(__dirname, '..', 'dist', 'smoke');
   fs.mkdirSync(out, { recursive: true });
-  const js = code => win.webContents.executeJavaScript(`(async () => { ${code} })().catch(e => 'ERROR ' + e.stack)`);
+  const { js, check, record, finish } = harness(win, app);
   const shot = async name => fs.writeFileSync(path.join(out, name + '.png'), (await win.webContents.capturePage()).toPNG());
-  const results = [];
-  const check = async (name, code) => {
-    const r = await js(code);
-    const ok = typeof r === 'string' && r.startsWith('ok');
-    results.push(`${ok ? 'PASS' : 'FAIL'} ${name}: ${r}`);
-  };
   await new Promise(r => setTimeout(r, 1200));
   // A dark-sounding cabinet IR (one-pole low-pass at ~700 Hz) for the IR test, written as a WAV.
   const irDir = '/tmp/basement-band-test-ir';
@@ -448,15 +443,15 @@ module.exports = async function flows(win, app) {
     await app.toggleMonitor(t);
     // The fake input beeps on and off, so watch the levels for a couple of seconds.
     const node = app.engine.nodes.get(t.id);
-    let level = -Infinity, trackMeter = -Infinity;
-    for (let i = 0; i < 40; i++) {
+    let level = -Infinity, trackMeter = -Infinity, waited = 0;
+    for (; waited < 10000 && !(level > -40 && trackMeter > -60); waited += 50) {
       await new Promise(r => setTimeout(r, 50));
       level = Math.max(level, app.engine.inputLevel('left'));
       const m = node.meter.getValue();
       trackMeter = Math.max(trackMeter, typeof m === 'number' ? m : Math.max(...m));
     }
-    if (!(level > -40)) return 'no input level ' + level;
-    if (!(trackMeter > -60)) return 'nothing reaching the track ' + trackMeter;
+    if (!(level > -40)) return 'no input level after ' + waited + ' ms: ' + level;
+    if (!(trackMeter > -60)) return 'nothing reaching the track after ' + waited + ' ms: ' + trackMeter;
     app.seek(4);
     await app.toggleRecord();
     await new Promise(r => setTimeout(r, 1500));
@@ -1141,7 +1136,7 @@ module.exports = async function flows(win, app) {
     window.__keys = keys.id; window.__voice = voice.id;
     app.bottomMode = null; app.refresh();`);
   const ids = JSON.parse(await js(`return JSON.stringify([__keys, __voice]);`));
-  const expectOpen = (name, got, want) => results.push(`${got === want ? 'PASS' : 'FAIL'} double-click ${name}: ${got === want ? 'ok' : got + ' (wanted ' + want + ')'}`);
+  const expectOpen = (name, got, want) => record(got === want ? 'PASS' : 'FAIL', `double-click ${name}`, got === want ? 'ok' : got + ' (wanted ' + want + ')');
   const reset = () => js(`app.bottomMode = null; app.editor.open(null); app.refresh();`);
   expectOpen('an instrument region opens the piano roll', await doubleClick('.region[data-id="dc-keys"]'), `editor:dc-keys:${ids[0]}`);
   await reset();
@@ -1419,6 +1414,73 @@ module.exports = async function flows(win, app) {
     if (ed.noteEdge({ t: 0, d: 0.25, n: 60 }, 11) !== null) fails.push('no middle on a 1/16 note');
     if (ed.noteEdge({ t: 0, d: 0.05, n: 60 }, 1) !== null) fails.push('tiny note has an edge');
     return fails.length ? fails.join('; ') : 'ok';`);
+  await check('MIDI regions trim from the start with their notes staying put', `
+    const { newTrack, newMidiRegion } = await import('./state.js');
+    let t;
+    const fresh = extra => {
+      store.update(() => {
+        store.project.tracks = store.project.tracks.filter(old => !old.regions.some(r => r.id === 'trimmidi'));
+        t = newTrack('instrument');
+        t.regions.push(newMidiRegion(4, 8, [{ t: 0, d: 1, n: 60, v: 0.8 }, { t: 2, d: 1, n: 62, v: 0.8 }, { t: 5, d: 1, n: 64, v: 0.8 }], { id: 'trimmidi', ...extra }));
+        store.project.tracks.push(t); store.ui.selectedTrack = t.id;
+      });
+      app.refresh();
+    };
+    const region = () => store.findRegion('trimmidi').region;
+    // Song position and pitch of every note, as they'd play.
+    const heard = () => { const r = region(); const out = []; const loop = r.loopLength || r.length; for (let off = 0; off < r.length - 1e-6; off += loop) for (const n of r.notes) if (n.t < loop - 1e-6 && off + n.t < r.length - 1e-6) out.push((r.start + off + n.t) + ':' + n.n); return out.sort().join(' '); };
+    const dragStart = px => {
+      const handle = document.querySelector('.region[data-id="trimmidi"] .handle-start');
+      const b = handle.getBoundingClientRect();
+      const o = { bubbles: true, button: 0, clientX: b.left + 2, clientY: b.top + b.height / 2 };
+      handle.dispatchEvent(new MouseEvent('mousedown', o));
+      window.dispatchEvent(new MouseEvent('mousemove', { ...o, clientX: o.clientX + px }));
+      window.dispatchEvent(new MouseEvent('mouseup', { ...o, clientX: o.clientX + px }));
+    };
+    const z = app.arrange.zoom;
+    const fails = [];
+    fresh();
+    if (!document.querySelector('.region[data-id="trimmidi"] .handle-start')) return 'no handle';
+    // Trimming a bar: the first two notes went, the third hasn't moved.
+    dragStart(4 * z);
+    if (region().start !== 8 || region().length !== 4) fails.push('trim: ' + JSON.stringify(region()));
+    if (heard() !== '9:64') fails.push('after trim ' + heard());
+    // Dragged back out it all returns, with undo too.
+    store.undo();
+    if (heard() !== '4:60 6:62 9:64') fails.push('undo ' + heard());
+    // Extending adds space and stops at the start of the song.
+    dragStart(-500 * z);
+    if (region().start !== 0 || region().length !== 12) fails.push('extend: ' + JSON.stringify(region()));
+    if (heard() !== '4:60 6:62 9:64') fails.push('extended moved notes ' + heard());
+    store.undo();
+    // It can't go past its own end.
+    dragStart(500 * z);
+    if (!(region().length > 0) || region().start >= 12) fails.push('past the end: ' + JSON.stringify(region()));
+    store.undo();
+    // A looped region keeps what plays, and repeats back over space added at the front.
+    store.update(() => { region().loopLength = 4; region().notes = region().notes.slice(0, 2); });
+    const looped = heard();
+    if (looped !== '10:62 4:60 6:62 8:60') fails.push('loop setup ' + looped);
+    dragStart(4 * z);
+    if (heard() !== '10:62 8:60') fails.push('looped trim ' + heard());
+    store.undo();
+    dragStart(-4 * z);
+    if (region().start !== 0 || heard() !== '0:60 10:62 2:62 4:60 6:62 8:60') fails.push('looped extend ' + heard());
+    store.undo();
+    // A generated region turns into plain notes, unless the drag comes back to where it began.
+    fresh({ gen: { style: 'pop', part: 'keys', complexity: 0.5, intensity: 0.5, seed: 1, progression: 'I', fills: false } });
+    const before = JSON.stringify(region().notes);
+    const handle = () => document.querySelector('.region[data-id="trimmidi"] .handle-start');
+    const b = handle().getBoundingClientRect();
+    const o = { bubbles: true, button: 0, clientX: b.left + 2, clientY: b.top + b.height / 2 };
+    handle().dispatchEvent(new MouseEvent('mousedown', o));
+    window.dispatchEvent(new MouseEvent('mousemove', { ...o, clientX: o.clientX + 4 * z }));
+    window.dispatchEvent(new MouseEvent('mousemove', o));
+    window.dispatchEvent(new MouseEvent('mouseup', o));
+    if (!region().gen || JSON.stringify(region().notes) !== before) fails.push('there and back lost the generator');
+    dragStart(4 * z);
+    if (region().gen) fails.push('still generated after a trim');
+    return fails.length ? fails.join('; ') : 'ok';`);
   await check('clips trim from the start with the audio staying put, in the arrangement and the editor', `
     const { newTrack, trimClipStart } = await import('./state.js');
     const { audioSegments } = await import('./engine/engine.js');
@@ -1625,6 +1687,5 @@ module.exports = async function flows(win, app) {
   await js(`app.editor.chordSize = 3; app.editor.chordStyle = 'block';`);
   await js(`app.editor.setTool('pointer'); store.update(() => { delete store.project.scaleGuide; }); app.library.show('sounds');`);
 
-  console.log('\n' + results.join('\n'));
-  app.quit();
+  finish();
 };

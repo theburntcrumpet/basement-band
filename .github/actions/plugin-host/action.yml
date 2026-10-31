@@ -22,6 +22,19 @@ runs:
         cmake "${args[@]}"
         cmake --build native/plugin-host/build --config Release --parallel
 
+    # The helper needs at least the glibc it was built with, so a newer build machine quietly drops
+    # older Linux systems. 2.39 is Ubuntu 24.04, and Debian 13 has 2.41; raise this only on purpose.
+    - name: Check the helper still runs on the Linux systems we support
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        newest=$(objdump -T native/plugin-host/build/bb-plugin-host_artefacts/Release/bb-plugin-host | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
+        echo "The helper needs $newest"
+        if [ "$(printf '%s\nGLIBC_2.39\n' "$newest" | sort -V | tail -1)" != GLIBC_2.39 ]; then
+          echo "::error::The helper needs $newest, newer than the 2.39 we support"
+          exit 1
+        fi
+
     - name: Bundle plugins (Dexed)
       shell: bash
       run: node scripts/fetch-plugins.mjs

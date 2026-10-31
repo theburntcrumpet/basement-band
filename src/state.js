@@ -138,6 +138,39 @@ export function trimClipStart(region, start, project, base = region) {
   region.loopLength = region.length;
 }
 
+// The same for a MIDI region: notes stay where they are in the song. As when splitting, a note that
+// begins before the new start goes rather than sounding late. Loops are written out, repeating back
+// over any space added at the front; generated regions become plain notes unless the drag returns
+// to where it began.
+export function trimMidiStart(region, start, base = region) {
+  const delta = start - base.start;
+  region.start = start;
+  if (Math.abs(delta) < 1e-9) {
+    region.length = base.length;
+    region.loopLength = base.loopLength;
+    region.notes = base.notes;
+    if (base.gen) region.gen = base.gen;
+    return;
+  }
+  const loop = base.loopLength || base.length;
+  const looped = loop < base.length - 1e-6;
+  const length = base.length - delta;
+  const notes = [];
+  const first = looped ? Math.floor(delta / loop) * loop : 0;
+  for (let pass = first; pass === first || (looped && pass < base.length - 1e-6); pass += loop) {
+    for (const n of base.notes) {
+      if (looped && n.t >= loop - 1e-6) continue;
+      const t = pass + n.t - delta;
+      if (t < -1e-6 || (looped && t >= length - 1e-6)) continue;
+      notes.push({ ...n, t: Math.max(0, t), d: looped ? Math.min(n.d, length - t) : n.d });
+    }
+  }
+  delete region.gen;
+  region.notes = notes;
+  region.length = length;
+  region.loopLength = length;
+}
+
 // Resizing (rather than looping) a region. `base` is the region as it was when the drag began, so
 // looped content is unrolled once and nothing is lost if the drag shrinks and then grows again.
 // Generated parts write new bars instead, with fills moving to the new end.

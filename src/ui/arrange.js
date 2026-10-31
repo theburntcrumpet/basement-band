@@ -1,10 +1,10 @@
 // The arrangement: ruler, cycle range, track headers, lanes and regions.
 
 import { icon } from './icons.js';
-import { h, $, drag, contextMenu, canvas2d, palette } from './dom.js';
+import { h, $, drag, contextMenu, canvas2d, palette, toast } from './dom.js';
 import { AUTO_PARAMS, AUTO_PARAM, curve, valueAt, staticValue, normalize } from '../engine/automation.js';
 import { sections } from '../arrangement.js';
-import { store, uid, TRACK_COLORS, resizeRegion, trimClipStart, clipStartLimit } from '../state.js';
+import { store, uid, TRACK_COLORS, resizeRegion, trimClipStart, trimMidiStart, clipStartLimit } from '../state.js';
 import { meter } from '../music/meter.js';
 import { getInstrument } from '../engine/instruments.js';
 import { sourceSpb } from '../engine/engine.js';
@@ -227,7 +227,7 @@ export class Arrange {
     const phase = track.type === 'audio' ? region.phase || 0 : 0;
     for (let b = loopLen - phase; b < region.length - 1e-6; b += loopLen) if (b > 1e-6) el.append(h('div', { class: 'loop-mark', style: { left: b * z + 'px' } }));
     el.append(h('div', { class: 'handle-loop' }), h('div', { class: 'handle-resize' }));
-    if (track.type === 'audio') el.append(h('div', { class: 'handle-start', title: 'Drag to trim the start of the clip' }));
+    el.append(h('div', { class: 'handle-start', title: 'Drag to trim the start' }));
     requestAnimationFrame(() => this.drawRegion(cv, track, region, w));
 
     el.addEventListener('mousedown', e => this.regionDown(e, track, region));
@@ -682,10 +682,11 @@ export class Arrange {
       } else if (mode === 'start') {
         const minLen = this.snapUnit() >= this.meter.barBeats ? this.meter.pulse : 0.25;
         for (const o of orig) {
-          if (o.t.type !== 'audio') continue;
-          const earliest = clipStartLimit(o.base, store.project);
+          const audio = o.t.type === 'audio';
+          const earliest = audio ? clipStartLimit(o.base, store.project) : 0;
           const start = Math.max(earliest, Math.min(o.start + o.length - minLen, this.snap(o.start + dx / this.zoom, ev.shiftKey)));
-          trimClipStart(o.r, start, store.project, o.base);
+          if (audio) trimClipStart(o.r, start, store.project, o.base);
+          else trimMidiStart(o.r, start, o.base);
         }
       } else {
         for (const o of orig) {
@@ -706,7 +707,10 @@ export class Arrange {
         }
       }
       this.app.refresh();
-    }, () => store.endGesture());
+    }, () => {
+      if (mode === 'start' && orig.some(o => o.base.gen && !o.r.gen)) toast('Region converted to editable notes');
+      store.endGesture();
+    });
   }
 
   setupDrop(lane, track) {
