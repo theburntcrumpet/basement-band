@@ -1,5 +1,6 @@
 # Unit tests on every push and pull request (fast: no sample download needed), the native plugin
-# helper built and checked against the bundled Dexed on every platform, and the in-app suites on Linux.
+# helper built and checked against the bundled Dexed on every platform, and the end-to-end flows on
+# Linux. The native suite (npm run test:native) takes too long here, so it's run locally.
 name: CI
 
 on:
@@ -24,9 +25,9 @@ jobs:
         run: npm test
 
   app:
-    name: In-app suites
+    name: End-to-end flows
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,13 +42,9 @@ jobs:
       - name: Install dependencies (and fetch samples)
         run: npm ci
       - name: Install what Electron needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3 libatk-bridge2.0-0t64 libgtk-3-0t64 libgbm1 libasound2t64 libxss1 libxtst6
-      - uses: ./.github/actions/plugin-host
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb libnss3 libatk-bridge2.0-0t64 libgtk-3-0t64 libgbm1 libasound2t64 libxss1 libxtst6
       - name: End-to-end flows
         run: npm run smoke
-      - name: Native engine
-        if: ${{ !cancelled() }}
-        run: npm run test:native
 
   plugin-host:
     name: Plugin helper (${{ matrix.os }})

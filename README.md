@@ -286,8 +286,9 @@ npm run test:instruments   # SoundFont/SFZ/folder import + playback checks (uses
 npm run levels   # a report, not a test: renders every instrument and prints its loudness
 ```
 
-CI runs `npm test`, `smoke` and `test:native` on Linux, and the helper checks on Linux and Windows. The
-in-app suites print `PASS`, `SKIP` or `FAIL` as each check finishes and exit non-zero if any failed.
+CI runs `npm test` and `smoke` on Linux, and the helper checks on Linux and Windows. It doesn't run
+`test:native`, which takes too long there, so run that locally when changing the engine. The in-app
+suites print `PASS`, `SKIP` or `FAIL` as each check finishes and exit non-zero if any failed.
 
 ## Licenses
 
